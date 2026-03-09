@@ -1,0 +1,27 @@
+{
+    "ospf": {
+        "router_id": "192.168.1.1",
+        "area_id": "0.0.0.0",
+        "interfaces": [
+            {
+                "name": "eth0",
+                "ip": "192.168.1.1",
+                "netmask": "255.255.255.0",
+                "cost": 1
+            }
+        ],
+        "hello_interval": 10,
+        "dead_interval": 40,
+        "router_priority": 1
+    },
+    "routes": {
+        "base_network": "10.0.0.0",
+        "count": 10,
+        "prefix": 24,
+        "next_hop": "0.0.0.0"
+    },
+    "logging": {
+        "level": "INFO",
+        "file": "/work/ospf_sim/ospf.log"
+    }
+}
