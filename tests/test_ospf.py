@@ -117,14 +117,13 @@ class TestPacketProcessing(unittest.TestCase):
     def test_hello_processing(self):
         """测试 Hello 报文处理"""
         hello = HelloPacket(
-            network_mask="255.255.255.0",
-            router_id="192.168.1.2"
+            network_mask="255.255.255.0"
         )
         
         header = OSPFHeader(
             type=OSPF_TYPE_HELLO,
             length=24 + len(hello.pack()),
-            router_id="192.168.1.1",
+            router_id="192.168.1.2",  # 使用不同的 router_id
             area_id="0.0.0.0"
         )
         

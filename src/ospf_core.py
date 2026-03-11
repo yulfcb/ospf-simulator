@@ -10,10 +10,145 @@ import random
 import logging
 import threading
 import time
+import subprocess
+import platform
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from enum import Enum
 import json
+
+# 系统网络接口检测
+try:
+    import netifaces
+    HAS_NETIFACES = True
+except ImportError:
+    HAS_NETIFACES = False
+
+
+def get_system_interfaces() -> Dict[str, dict]:
+    """
+    获取系统网络接口列表
+    
+    Returns:
+        Dict: {接口名: {'ip': IP地址, 'netmask': 子网掩码, 'mac': MAC地址}}
+    """
+    interfaces = {}
+    
+    if HAS_NETIFACES:
+        # 使用 netifaces 库
+        for iface in netifaces.interfaces():
+            addrs = netifaces.ifaddresses(iface)
+            iface_info = {'ip': None, 'netmask': None, 'mac': None}
+            
+            # 获取 IPv4 地址
+            if netifaces.AF_INET in addrs:
+                for addr in addrs[netifaces.AF_INET]:
+                    iface_info['ip'] = addr.get('addr')
+                    iface_info['netmask'] = addr.get('netmask')
+                    break  # 只取第一个 IPv4
+            
+            # 获取 MAC 地址
+            if netifaces.AF_LINK in addrs:
+                iface_info['mac'] = addrs[netifaces.AF_LINK][0].get('addr')
+            
+            # 过滤掉回环和未配置的接口
+            if iface_info['ip'] and iface != 'lo':
+                interfaces[iface] = iface_info
+    else:
+        # 备用方案: 使用系统命令
+        system = platform.system()
+        try:
+            if system == 'Linux':
+                result = subprocess.run(['ip', 'addr'], capture_output=True, text=True)
+                _parse_linux_ip_addr(result.stdout, interfaces)
+            elif system == 'Windows':
+                result = subprocess.run(['ipconfig'], capture_output=True, text=True)
+                _parse_windows_ipconfig(result.stdout, interfaces)
+        except Exception as e:
+            logger.warning(f"获取系统接口失败: {e}")
+    
+    return interfaces
+
+
+def _parse_linux_ip_addr(output: str, interfaces: dict):
+    """解析 Linux ip addr 输出"""
+    current_iface = None
+    for line in output.split('\n'):
+        line = line.strip()
+        if line and not line.startswith(' '):
+            # 新接口
+            parts = line.split(':')
+            if len(parts) >= 2:
+                current_iface = parts[1].strip()
+                interfaces[current_iface] = {'ip': None, 'netmask': None, 'mac': None}
+        elif 'inet ' in line and current_iface:
+            # IPv4 地址
+            parts = line.split()
+            if len(parts) >= 3:
+                ip = parts[1].split('/')[0]
+                netmask = parts[3] if len(parts) > 3 else '255.255.255.0'
+                interfaces[current_iface]['ip'] = ip
+                interfaces[current_iface]['netmask'] = netmask
+        elif 'link/ether' in line and current_iface:
+            # MAC 地址
+            parts = line.split()
+            if len(parts) >= 2:
+                interfaces[current_iface]['mac'] = parts[1]
+    
+    # 过滤
+    for iface in list(interfaces.keys()):
+        if not interfaces[iface]['ip'] or iface == 'lo':
+            del interfaces[iface]
+
+
+def _parse_windows_ipconfig(output: str, interfaces: dict):
+    """解析 Windows ipconfig 输出"""
+    current_iface = None
+    for line in output.split('\n'):
+        line = line.strip()
+        if '适配器' in line or 'Adapter' in line:
+            # 新接口
+            parts = line.split()
+            if parts:
+                current_iface = parts[-1].rstrip(':')
+                interfaces[current_iface] = {'ip': None, 'netmask': None, 'mac': None}
+        elif 'IPv4' in line and current_iface:
+            parts = line.split(':')
+            if len(parts) >= 2:
+                interfaces[current_iface]['ip'] = parts[1].strip()
+        elif '子网掩码' in line or 'Mask' in line:
+            parts = line.split(':')
+            if len(parts) >= 2 and current_iface:
+                interfaces[current_iface]['netmask'] = parts[1].strip()
+    
+    # 过滤
+    for iface in list(interfaces.keys()):
+        if not interfaces[iface]['ip']:
+            del interfaces[iface]
+
+
+def cidr_to_netmask(cidr: str) -> str:
+    """
+    将 CIDR 转换为点分十进制子网掩码
+    例如: 24 -> 255.255.255.0
+    """
+    if '/' not in cidr:
+        return cidr
+    
+    ip, prefix = cidr.split('/')
+    prefix = int(prefix)
+    
+    mask = (0xFFFFFFFF >> (32 - prefix)) << (32 - prefix)
+    return socket.inet_ntoa(struct.pack('!I', mask))
+
+
+def netmask_to_cidr(netmask: str) -> int:
+    """
+    将点分十进制子网掩码转换为 CIDR 前缀长度
+    例如: 255.255.255.0 -> 24
+    """
+    mask = socket.inet_aton(netmask)
+    return bin(struct.unpack('!I', mask)[0]).count('1')
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -62,7 +197,7 @@ class OSPFHeader:
     
     def pack(self) -> bytes:
         """打包 OSPF 头部"""
-        header = struct.pack("!BBH4s4sHIH",
+        header = struct.pack("!BBH4s4sHH8s",
             self.version,
             self.type,
             self.length,
@@ -70,14 +205,19 @@ class OSPFHeader:
             socket.inet_aton(self.area_id),
             self.checksum,
             self.auth_type,
-            self.auth
+            self.auth.to_bytes(8, 'big') if isinstance(self.auth, int) else self.auth
         )
         return header
     
     @classmethod
     def unpack(cls, data: bytes) -> 'OSPFHeader':
         """解包 OSPF 头部"""
-        header = struct.unpack("!BBH4s4sHIH", data[:24])
+        header = struct.unpack("!BBH4s4sHH8s", data[:24])
+        auth_bytes = header[7]
+        if isinstance(auth_bytes, bytes):
+            auth_val = int.from_bytes(auth_bytes, 'big')
+        else:
+            auth_val = auth_bytes
         return cls(
             version=header[0],
             type=header[1],
@@ -86,7 +226,7 @@ class OSPFHeader:
             area_id=socket.inet_ntoa(header[4]),
             checksum=header[5],
             auth_type=header[6],
-            auth=header[7]
+            auth=auth_val
         )
 
 @dataclass
@@ -102,14 +242,13 @@ class HelloPacket:
     
     def pack(self) -> bytes:
         """打包 Hello 报文"""
-        # 格式: 4s H B B I I 4s 4s = 4+2+1+1+4+4+4+4 = 24字节 (加一个reserved)
-        data = struct.pack("!4sHBBIII4s4s",
+        # 格式: NetworkMask(4) HelloInterval(2) Options(1) Priority(1) DeadInterval(4) DR(4) BDR(4) = 20字节
+        data = struct.pack("!4sHBB I 4s 4s".replace(" ", ""),
             socket.inet_aton(self.network_mask),
             self.hello_interval,
             self.options,
             self.router_priority,
             self.dead_interval,
-            0,  # reserved
             socket.inet_aton(self.dr),
             socket.inet_aton(self.bdr)
         )
@@ -121,9 +260,11 @@ class HelloPacket:
     @classmethod
     def unpack(cls, data: bytes) -> 'HelloPacket':
         """解包 Hello 报文"""
-        header = struct.unpack("!4sHBBII4s4s", data[:24])
+        if len(data) < 20:
+            return cls()
+        header = struct.unpack("!4sHBB I 4s 4s".replace(" ", ""), data[:20])
         neighbors = []
-        offset = 24
+        offset = 20
         while offset + 4 <= len(data):
             neighbor_id = socket.inet_ntoa(data[offset:offset+4])
             neighbors.append(neighbor_id)
@@ -154,18 +295,19 @@ class DDPacket:
     
     def pack(self) -> bytes:
         """打包 DD 报文"""
-        dd_header = struct.pack("!BBIII",
+        # 格式: Options(1) DD Sequence(4) Flags(1)
+        dd_header = struct.pack("!BIB",
             self.options,
             self.dd_sequence,
-            self.flags,
-            0,  # reserved
-            0   # LSA length (placeholder)
+            self.flags
         )
         return dd_header
     
     @classmethod
     def unpack(cls, data: bytes) -> 'DDPacket':
-        header = struct.unpack("!BBIII", data[:16])
+        if len(data) < 6:
+            return cls()
+        header = struct.unpack("!BIB", data[:6])
         return cls(
             options=header[0],
             dd_sequence=header[1],
@@ -221,6 +363,7 @@ class LSUPacket:
                 0   # attached router
             )
             lsa_data += lsa
+        # LSU 头部: age(2) + type(1) + id(4) + adv_router(4) + sequence(4) + checksum(2) + length(2) = 20 bytes
         return struct.pack("!IH4s4sIIIH",
             self.age,
             self.type,
@@ -435,23 +578,30 @@ class OSPFRouter:
     def send_hello(self, sock: socket.socket, target: str = ALL_SPF_ROUTERS):
         """发送 Hello 报文"""
         for iface_name, iface in self.interfaces.items():
+            # 收集当前接口上已知邻居的 router_id
+            neighbor_list = list(self.neighbors.keys())
+            
             hello = HelloPacket(
                 network_mask=iface['netmask'],
-                
                 hello_interval=10,
                 router_priority=1,
                 dr=iface['dr'],
-                bdr=iface['bdr']
+                bdr=iface['bdr'],
+                neighbor=neighbor_list
             )
             
             msg = OSPFHeader(
                 type=OSPF_TYPE_HELLO,
                 length=24 + len(hello.pack()),
-                
+                router_id=self.router_id,
                 area_id=self.area_id
             )
             
             packet = msg.pack() + hello.pack()
+            
+            # Raw Socket 需要添加 IP 头部
+            if hasattr(self, 'use_raw') and self.use_raw:
+                packet = self._add_ip_header(packet, target)
             
             try:
                 sock.sendto(packet, (target, 89))
@@ -490,24 +640,101 @@ class OSPFRouter:
         """处理 Hello 报文"""
         hello = HelloPacket.unpack(data)
         
-        # 更新邻居
-        if src_addr not in self.neighbors:
-            self.neighbors[src_addr] = {
-                'state': NeighborState.INIT,
-                'priority': hello.router_priority,
-                'dr': hello.dr,
-                'bdr': hello.bdr
-            }
+        # 获取发送者的 router_id (从 OSPF 头部的 router_id 字段)
+        # 这里 src_addr 可能不是 router_id，所以需要从 packet 中解析
+        # 但由于 process_packet 已经处理了 packet，我们用 src_addr 作为邻居标识
+        
+        response = None
+        
+        # 检查发送者的 Hello 报文中是否包含我们的 router_id (2-way 通信确认)
+        if self.router_id in hello.neighbor:
+            # 对方已经看到了我们的 Hello，达成 2-way 通信
+            if src_addr not in self.neighbors:
+                self.neighbors[src_addr] = {
+                    'state': NeighborState.TWOWAY,
+                    'priority': hello.router_priority,
+                    'dr': hello.dr,
+                    'bdr': hello.bdr
+                }
+            else:
+                self.neighbors[src_addr]['state'] = NeighborState.TWOWAY
+            
+            # 触发 DD 交换 (从 EXSTART 开始)
+            response = self._start_dd_exchange(src_addr)
         else:
-            self.neighbors[src_addr]['state'] = NeighborState.TWOWAY
+            # 更新邻居
+            if src_addr not in self.neighbors:
+                self.neighbors[src_addr] = {
+                    'state': NeighborState.INIT,
+                    'priority': hello.router_priority,
+                    'dr': hello.dr,
+                    'bdr': hello.bdr
+                }
+                # 如果之前已经收到过对方的 Hello，尝试再次检查
+            else:
+                # 已经存在，检查是否需要升级到 TWOWAY
+                if self.neighbors[src_addr]['state'] == NeighborState.INIT:
+                    # 再次检查，可能对方的 Hello 还没有包含我们
+                    self.neighbors[src_addr]['state'] = NeighborState.TWOWAY
+                    response = self._start_dd_exchange(src_addr)
         
         logger.info(f"收到 Hello from {src_addr}, 邻居状态: {self.neighbors[src_addr]['state']}")
-        return None
+        return response
+    
+    def _start_dd_exchange(self, neighbor_id: str):
+        """开始 DD 交换过程"""
+        if neighbor_id not in self.neighbors:
+            return
+        
+        state = self.neighbors[neighbor_id].get('state')
+        if state != NeighborState.TWOWAY:
+            return
+        
+        # 转换到 EXSTART 状态
+        self.neighbors[neighbor_id]['state'] = NeighborState.EXSTART
+        self.neighbors[neighbor_id]['dd_sequence'] = random.randint(1, 0x7FFFFFFF)
+        
+        logger.info(f"开始 DD 交换 with {neighbor_id}")
+        
+        # 发送 DD 报文 (初始 DD，I=1, M=1, MS=1)
+        dd = DDPacket(
+            options=0x02,
+            dd_sequence=self.neighbors[neighbor_id]['dd_sequence'],
+            flags=0x07  # I, M, MS
+        )
+        
+        msg = OSPFHeader(
+            type=OSPF_TYPE_DD,
+            length=24 + len(dd.pack()),
+            router_id=self.router_id,
+            area_id=self.area_id
+        )
+        
+        return msg.pack() + dd.pack()
     
     def _process_dd(self, data: bytes, src_addr: str) -> Optional[bytes]:
         """处理 DD 报文"""
-        self._update_neighbor_state(src_addr, NeighborState.EXCHANGE)
-        # 简化的 DD 处理
+        dd = DDPacket.unpack(data)
+        
+        # 更新邻居状态
+        if src_addr in self.neighbors:
+            old_state = self.neighbors[src_addr].get('state')
+            self.neighbors[src_addr]['state'] = NeighborState.EXCHANGE
+            self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
+        
+        logger.info(f"收到 DD from {src_addr}, sequence={dd.dd_sequence}, flags={dd.flags}")
+        
+        # 简化的 DD 处理: 直接发送我们的完整 LSDB
+        # 在实际 OSPF 中需要比较 DD 中的 LSA 头部来决定请求哪些
+        
+        # 转换到 LOADING 状态
+        self._update_neighbor_state(src_addr, NeighborState.LOADING)
+        
+        # 发送 LSU 包含我们的所有 LSA
+        lsa_list = list(self.lsdb.values())
+        if lsa_list:
+            return self._build_lsu(lsa_list, src_addr)
+        
         return None
     
     def _process_lsr(self, data: bytes, src_addr: str) -> Optional[bytes]:
@@ -579,7 +806,7 @@ class OSPFRouter:
         msg = OSPFHeader(
             type=OSPF_TYPE_LSU,
             length=24 + len(lsu.pack()),
-            
+            router_id=self.router_id,
             area_id=self.area_id
         )
         
@@ -600,7 +827,7 @@ class OSPFRouter:
         msg = OSPFHeader(
             type=OSPF_TYPE_LSACK,
             length=24 + len(ack_data),
-            
+            router_id=self.router_id,
             area_id=self.area_id
         )
         
@@ -619,12 +846,15 @@ class OSPFRouter:
             'stats': self.stats
         }
     
-    def flood_lsa(self, sock: socket.socket):
+    def flood_lsa(self, sock: socket.socket, use_raw: bool = True, add_ip_header_func=None):
         """泛洪 LSA 到所有邻居"""
         for neighbor_id in self.neighbors:
             if self.neighbors[neighbor_id].get('state') == NeighborState.FULL:
                 lsa_list = list(self.lsdb.values())
                 packet = self._build_lsu(lsa_list, neighbor_id)
+                # Raw Socket 需要添加 IP 头部
+                if use_raw and add_ip_header_func:
+                    packet = add_ip_header_func(packet, neighbor_id)
                 try:
                     sock.sendto(packet, (neighbor_id, 89))
                 except Exception as e:
@@ -639,11 +869,73 @@ class OSPFSimulator:
         self.sock = None
         self.running = False
         self.threads: List[threading.Thread] = []
+        self.use_raw = True  # 默认使用 Raw Socket
+    
+    def _build_ip_header(self, payload_len: int, src_ip: str, dst_ip: str) -> bytes:
+        """构建 IP 头部 (OSPF 使用协议号 89)"""
+        # IP 头部格式: ver(4) + IHL(4) + TOS(1) + TotalLen(2) + ID(2) + Flags(2) + TTL(1) + Proto(1) + Checksum(2) + Src(4) + Dst(4)
+        version_ihl = 0x45  # Version 4, IHL 5 (20 bytes)
+        tos = 0
+        total_len = 20 + payload_len  # IP header + payload
+        packet_id = 0
+        flags_fragment = 0
+        ttl = 64
+        protocol = 89  # OSPF
+        checksum = 0
+        
+        src_ip_int = socket.inet_aton(src_ip)
+        dst_ip_int = socket.inet_aton(dst_ip)
+        
+        # 计算校验和
+        ip_header = struct.pack("!BBHHHBBH4s4s", 
+            version_ihl, tos, total_len, packet_id, 
+            flags_fragment, ttl, protocol, checksum,
+            src_ip_int, dst_ip_int)
+        checksum = self._ip_checksum(ip_header)
+        ip_header = struct.pack("!BBHHHBBH4s4s", 
+            version_ihl, tos, total_len, packet_id, 
+            flags_fragment, ttl, protocol, checksum,
+            src_ip_int, dst_ip_int)
+        
+        return ip_header
+    
+    @staticmethod
+    def _ip_checksum(header: bytes) -> int:
+        """计算 IP 头部校验和"""
+        checksum = 0
+        for i in range(0, len(header), 2):
+            if i + 1 < len(header):
+                word = (header[i] << 8) + header[i + 1]
+            else:
+                word = header[i] << 8
+            checksum += word
+        while checksum >> 16:
+            checksum = (checksum & 0xFFFF) + (checksum >> 16)
+        return ~checksum & 0xFFFF
+    
+    def _add_ip_header(self, packet: bytes, dst_ip: str) -> bytes:
+        """为 OSPF 报文添加 IP 头部"""
+        # 使用第一个接口的 IP 作为源地址
+        src_ip = "0.0.0.0"
+        for iface in self.router.interfaces.values():
+            src_ip = iface['ip']
+            break
+        ip_header = self._build_ip_header(len(packet), src_ip, dst_ip)
+        return ip_header + packet
     
     def start(self):
         """启动模拟器"""
-        # 创建 UDP 套接字
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_UDP, socket.IPPROTO_UDP)
+        # 创建 Raw Socket 用于 OSPF (需要 root 权限)
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, 89)  # 89 = OSPF
+        except PermissionError:
+            logger.warning("需要 root 权限使用 Raw Socket，回退到 UDP")
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+            self.use_raw = False
+        else:
+            self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)  # 手动构造 IP 头部
+            self.use_raw = True
+        
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('0.0.0.0', 89))
         
@@ -690,7 +982,19 @@ class OSPFSimulator:
             try:
                 data, addr = self.sock.recvfrom(4096)
                 if data:
-                    self.router.process_packet(data, addr[0])
+                    # Raw Socket: 去掉 IP 头部 (20 bytes)
+                    if hasattr(self, 'use_raw') and self.use_raw and len(data) > 20:
+                        ospf_data = data[20:]
+                    else:
+                        ospf_data = data
+                    
+                    # 处理报文并获取响应
+                    response = self.router.process_packet(ospf_data, addr[0])
+                    # 如果有响应，发送回去 (Raw Socket 需要 IP 头)
+                    if response:
+                        if hasattr(self, 'use_raw') and self.use_raw:
+                            response = self._add_ip_header(response, addr[0])
+                        self.sock.sendto(response, (addr[0], 89))
             except socket.timeout:
                 continue
             except Exception as e:

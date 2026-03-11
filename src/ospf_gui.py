@@ -7,13 +7,16 @@ OSPF 模拟器 - 图形化配置界面
 import sys
 import threading
 import time
+import logging
 from PyQt5.QtWidgets import *
 from PyQt5.QtCore import *
 from PyQt5.QtGui import *
 
+logger = logging.getLogger(__name__)
+
 # 导入 OSPF 核心
 sys.path.insert(0, '/work/ospf_sim/src')
-from ospf_core import OSPFSimulator, NeighborState
+from ospf_core import OSPFSimulator, NeighborState, get_system_interfaces, cidr_to_netmask
 
 
 class OSPFGUI(QMainWindow):
@@ -47,32 +50,53 @@ class OSPFGUI(QMainWindow):
         self.area_id_edit = QLineEdit("0.0.0.0")
         config_layout.addWidget(self.area_id_edit, 0, 3)
         
-        # 接口名称
+        # 接口名称 - 下拉选择 + 自定义
         config_layout.addWidget(QLabel("接口名称:"), 1, 0)
-        self.iface_name_edit = QLineEdit("eth0")
-        config_layout.addWidget(self.iface_name_edit, 1, 1)
+        self.iface_combo = QComboBox()
+        self.iface_combo.setEditable(True)
+        self.iface_combo.addItem("自定义...")
+        self.iface_combo.currentIndexChanged.connect(self.on_interface_changed)
+        config_layout.addWidget(self.iface_combo, 1, 1)
+        
+        # 刷新接口按钮
+        self.refresh_iface_btn = QPushButton("🔄")
+        self.refresh_iface_btn.setToolTip("刷新接口列表")
+        self.refresh_iface_btn.clicked.connect(self.refresh_interfaces)
+        self.refresh_iface_btn.setMaximumWidth(40)
+        config_layout.addWidget(self.refresh_iface_btn, 1, 2)
         
         # 接口 IP
-        config_layout.addWidget(QLabel("接口 IP:"), 1, 2)
+        config_layout.addWidget(QLabel("接口 IP:"), 1, 3)
         self.iface_ip_edit = QLineEdit("192.168.1.1")
-        config_layout.addWidget(self.iface_ip_edit, 1, 3)
+        config_layout.addWidget(self.iface_ip_edit, 2, 0)
         
         # 子网掩码
-        config_layout.addWidget(QLabel("子网掩码:"), 2, 0)
+        config_layout.addWidget(QLabel("子网掩码:"), 2, 1)
         self.netmask_edit = QLineEdit("255.255.255.0")
-        config_layout.addWidget(self.netmask_edit, 2, 1)
+        config_layout.addWidget(self.netmask_edit, 2, 2)
         
         # 成本
-        config_layout.addWidget(QLabel("Cost:"), 2, 2)
+        config_layout.addWidget(QLabel("Cost:"), 2, 3)
         self.cost_spin = QSpinBox()
         self.cost_spin.setValue(1)
         self.cost_spin.setMaximum(65535)
-        config_layout.addWidget(self.cost_spin, 2, 3)
+        config_layout.addWidget(self.cost_spin, 3, 0)
         
-        # 添加接口按钮
-        self.add_iface_btn = QPushButton("添加接口")
+        # 添加/删除接口按钮
+        btn_layout = QHBoxLayout()
+        self.add_iface_btn = QPushButton("➕ 添加接口")
         self.add_iface_btn.clicked.connect(self.add_interface)
-        config_layout.addWidget(self.add_iface_btn, 3, 0, 1, 4)
+        btn_layout.addWidget(self.add_iface_btn)
+        
+        self.del_iface_btn = QPushButton("➖ 删除接口")
+        self.del_iface_btn.clicked.connect(self.delete_interface)
+        btn_layout.addWidget(self.del_iface_btn)
+        
+        config_layout.addLayout(btn_layout, 3, 1, 1, 3)
+        
+        # 初始化接口列表
+        self.system_interfaces = {}
+        self.refresh_interfaces()
         
         config_group.setLayout(config_layout)
         layout.addWidget(config_group)
@@ -218,9 +242,76 @@ class OSPFGUI(QMainWindow):
         
         QMessageBox.information(self, "成功", "OSPF 模拟器已停止")
     
+    def refresh_interfaces(self):
+        """刷新系统接口列表"""
+        self.system_interfaces = get_system_interfaces()
+        
+        # 保存当前选择
+        current = self.iface_combo.currentText()
+        
+        # 清空并重新填充
+        self.iface_combo.blockSignals(True)
+        self.iface_combo.clear()
+        self.iface_combo.addItem("自定义...")
+        
+        for iface_name, iface_info in self.system_interfaces.items():
+            display = f"{iface_name} ({iface_info['ip']})"
+            self.iface_combo.addItem(display, iface_info)
+        
+        # 恢复选择
+        idx = self.iface_combo.findText(current)
+        if idx >= 0:
+            self.iface_combo.setCurrentIndex(idx)
+        
+        self.iface_combo.blockSignals(False)
+        logger.info(f"刷新接口列表: {list(self.system_interfaces.keys())}")
+    
+    def on_interface_changed(self, index):
+        """接口下拉框选择变化"""
+        if index == 0:
+            # 自定义
+            self.iface_ip_edit.setEnabled(True)
+            self.iface_ip_edit.setText("")
+            self.netmask_edit.setEnabled(True)
+            self.netmask_edit.setText("255.255.255.0")
+        else:
+            # 选择系统接口
+            iface_info = self.iface_combo.currentData()
+            if iface_info:
+                self.iface_ip_edit.setText(iface_info.get('ip', ''))
+                netmask = iface_info.get('netmask', '255.255.255.0')
+                # 如果是 CIDR 格式，转换
+                if '/' in netmask:
+                    netmask = cidr_to_netmask(netmask)
+                self.netmask_edit.setText(netmask)
+                self.iface_ip_edit.setEnabled(False)
+                self.netmask_edit.setEnabled(False)
+    
+    def delete_interface(self):
+        """删除选中的接口"""
+        current_row = self.iface_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "错误", "请先选择要删除的接口")
+            return
+        
+        name_item = self.iface_table.item(current_row, 0)
+        if name_item:
+            name = name_item.text()
+            if name in self.interfaces:
+                del self.interfaces[name]
+                self.iface_table.removeRow(current_row)
+                logger.info(f"删除接口: {name}")
+    
     def add_interface(self):
         """添加接口"""
-        name = self.iface_name_edit.text()
+        # 获取接口名称
+        if self.iface_combo.currentIndex() == 0:
+            # 自定义
+            name = self.iface_combo.currentText()
+        else:
+            # 从下拉框选择
+            name = self.iface_combo.currentText().split(' ')[0]
+        
         ip = self.iface_ip_edit.text()
         netmask = self.netmask_edit.text()
         cost = self.cost_spin.value()
