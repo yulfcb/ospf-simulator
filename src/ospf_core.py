@@ -413,27 +413,38 @@ class LSUPacket:
         # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
         lsa_data = b''
         for entry in self.lsa_entries:
+            # 计算 LSA 长度 (RFC 2328)
+            lsa_type = entry.get('type', 1)
+            if lsa_type == 1:  # Router LSA
+                links = entry.get('links', [])
+                lsa_length = 20 + 12 * len(links)  # 20字节头部 + 每个链路12字节
+            elif lsa_type == 2:  # Network LSA
+                routers = entry.get('attached_routers', [])
+                lsa_length = 20 + 4 * len(routers)  # 20字节头部 + 每个路由器4字节
+            else:
+                lsa_length = 20  # Summary/External LSA
+            
             # 计算 LSA 校验和 (RFC 1071)
             lsa_header = struct.pack("!HBB4s4sIIH",
                 entry.get('age', 0),
                 entry.get('options', 0x02),
-                entry.get('type', 1),
+                lsa_type,
                 socket.inet_aton(entry.get('id', '0.0.0.0')),
                 socket.inet_aton(entry.get('adv_router', '0.0.0.0')),
                 entry.get('sequence', 0x80000001),
                 0,  # checksum 初始为 0
-                entry.get('length', 20)
+                lsa_length
             )
             lsa_checksum = calc_checksum(lsa_header)
             lsa = struct.pack("!HBB4s4sIIH",
                 entry.get('age', 0),
                 entry.get('options', 0x02),
-                entry.get('type', 1),
+                lsa_type,
                 socket.inet_aton(entry.get('id', '0.0.0.0')),
                 socket.inet_aton(entry.get('adv_router', '0.0.0.0')),
                 entry.get('sequence', 0x80000001),
                 lsa_checksum,
-                entry.get('length', 20)
+                lsa_length
             )
             lsa_data += lsa
         # LSU 报文 = LSA 头部 (20B) + LSA 列表
@@ -660,8 +671,12 @@ class OSPFRouter:
     def send_hello(self, sock: socket.socket, target: str = ALL_SPF_ROUTERS):
         """发送 Hello 报文"""
         for iface_name, iface in self.interfaces.items():
-            # 收集当前接口上已知邻居的 router_id
-            neighbor_list = list(self.neighbors.keys())
+            # 收集 Active Neighbor (2-way 及以上状态)
+            neighbor_list = []
+            for nid, ninfo in self.neighbors.items():
+                if ninfo.get('state') in [NeighborState.TWOWAY, NeighborState.EXSTART, 
+                                          NeighborState.EXCHANGE, NeighborState.LOADING, NeighborState.FULL]:
+                    neighbor_list.append(nid)
             
             hello = HelloPacket(
                 network_mask=iface['netmask'],
@@ -804,10 +819,11 @@ class OSPFRouter:
             is_master = my_id > peer_id
         
         # MS=1 表示 Master, MS=0 表示 Slave
-        ms_bit = 0x02 if is_master else 0x00
-        flags = 0x05 | ms_bit  # I=1, M=1, MS=根据election
+        # 初始DD报文，MS=0 (RFC 2328)
+        ms_bit = 0x00  # 初始DD报文，MS必须为0
+        flags = 0x05 | ms_bit  # I=1, M=1, MS=0
         
-        logger.info(f"开始 DD 交换 with {neighbor_id}, 我是{'Master' if is_master else 'Slave'}")
+        logger.info(f"开始 DD 交换 with {neighbor_id}")
         
         # 发送 DD 报文 (初始 DD，I=1, M=1, MS=根据router_id)
         dd = DDPacket(
