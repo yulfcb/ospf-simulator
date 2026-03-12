@@ -560,9 +560,10 @@ class NetworkLSA:
 class OSPFRouter:
     """OSPF 路由器"""
     
-    def __init__(self, router_id: str, area_id: str = OSPF_AREA_BACKBONE):
+    def __init__(self, router_id: str, area_id: str = OSPF_AREA_BACKBONE, priority: int = 1):
         self.router_id = router_id
         self.area_id = area_id
+        self.router_priority = priority  # DD优先级，0表示不想当Master
         self.interfaces: Dict[str, dict] = {}
         self.neighbors: Dict[str, dict] = {}
         self.lsdb: Dict[str, dict] = {}  # LSDB
@@ -791,14 +792,20 @@ class OSPFRouter:
         self.neighbors[neighbor_id]['state'] = NeighborState.EXSTART
         self.neighbors[neighbor_id]['dd_sequence'] = random.randint(1, 0x7FFFFFFF)
         
-        # Master/Slave 选举: 比较 router_id, 高的成为 Master
+        # Master/Slave 选举: 
+        # 1. 如果我的 priority=0，永不当 Master
+        # 2. 否则比较 router_id，高的成为 Master
         my_id = int.from_bytes(socket.inet_aton(self.router_id), 'big')
         peer_id = int.from_bytes(socket.inet_aton(neighbor_id), 'big')
-        is_master = my_id > peer_id
+        
+        if self.router_priority == 0:
+            is_master = False  # 不想当 Master
+        else:
+            is_master = my_id > peer_id
         
         # MS=1 表示 Master, MS=0 表示 Slave
         ms_bit = 0x02 if is_master else 0x00
-        flags = 0x05 | ms_bit  # I=1, M=1, MS=根据router_id
+        flags = 0x05 | ms_bit  # I=1, M=1, MS=根据election
         
         logger.info(f"开始 DD 交换 with {neighbor_id}, 我是{'Master' if is_master else 'Slave'}")
         
@@ -1023,8 +1030,8 @@ class OSPFRouter:
 class OSPFSimulator:
     """OSPF 模拟器主类"""
     
-    def __init__(self, router_id: str, area_id: str = OSPF_AREA_BACKBONE):
-        self.router = OSPFRouter(router_id, area_id)
+    def __init__(self, router_id: str, area_id: str = OSPF_AREA_BACKBONE, priority: int = 1):
+        self.router = OSPFRouter(router_id, area_id, priority)
         self.sock = None
         self.running = False
         self.threads: List[threading.Thread] = []

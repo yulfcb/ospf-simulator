@@ -80,7 +80,15 @@ class OSPFGUI(QMainWindow):
         self.cost_spin = QSpinBox()
         self.cost_spin.setValue(1)
         self.cost_spin.setMaximum(65535)
-        config_layout.addWidget(self.cost_spin, 3, 0)
+        config_layout.addWidget(self.cost_spin, 2, 4)
+        
+        # DD优先级 (0=不当Master)
+        config_layout.addWidget(QLabel("DD优先级:"), 3, 0)
+        self.priority_spin = QSpinBox()
+        self.priority_spin.setValue(1)
+        self.priority_spin.setMaximum(255)
+        self.priority_spin.setToolTip("设为0表示不想当Master")
+        config_layout.addWidget(self.priority_spin, 3, 1)
         
         # 添加/删除接口按钮
         btn_layout = QHBoxLayout()
@@ -215,7 +223,8 @@ class OSPFGUI(QMainWindow):
             QMessageBox.warning(self, "错误", "请输入 Router ID")
             return
         
-        self.simulator = OSPFSimulator(router_id, area_id)
+        priority = self.priority_spin.value()
+        self.simulator = OSPFSimulator(router_id, area_id, priority)
         
         # 添加已配置的接口
         for name, info in self.interfaces.items():
