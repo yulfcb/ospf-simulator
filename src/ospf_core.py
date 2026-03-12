@@ -882,16 +882,14 @@ class OSPFRouter:
         if current_state == NeighborState.EXSTART:
             # 检查是否已经选举了 Master/Slave
             if 'is_master' not in self.neighbors[src_addr]:
-                # 首次收到 DD，进行 Master/Slave 选举
-                my_id = int.from_bytes(socket.inet_aton(self.router_id), 'big')
-                peer_id = int.from_bytes(socket.inet_aton(src_addr), 'big')
-                
+                # RFC 2328: 根据对方 DD 报文的 MS 标志位确定角色
+                # MS=1 表示对方是 Master, MS=0 表示对方是 Slave
                 if self.router_priority == 0:
+                    self.neighbors[src_addr]['is_master'] = False  # 我永不当 Master
+                elif ms_bit:  # 对方 MS=1，对方是 Master
                     self.neighbors[src_addr]['is_master'] = False
-                elif peer_id > my_id:
-                    self.neighbors[src_addr]['is_master'] = False  # 对方是 Master
-                else:
-                    self.neighbors[src_addr]['is_master'] = True   # 我是 Master
+                else:  # 对方 MS=0，对方是 Slave，我是 Master
+                    self.neighbors[src_addr]['is_master'] = True
             
             # 等待收到对方的初始 DD (I=1) 后，进入 EXCHANGE
             if i_bit:
