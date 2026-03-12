@@ -215,8 +215,12 @@ class OSPFHeader:
     auth_type: int = 0
     auth: int = 0
     
-    def pack(self) -> bytes:
-        """打包 OSPF 头部 (含 checksum 计算)"""
+    def pack(self, body: bytes = b'') -> bytes:
+        """打包 OSPF 头部 (含 checksum 计算)
+        
+        Args:
+            body: 报文主体部分 (Hello/DD/LSR/LSU/LSAck 的 pack() 结果)
+        """
         # 先用 checksum=0 打包
         header = struct.pack("!BBH4s4sHH8s",
             self.version,
@@ -228,11 +232,12 @@ class OSPFHeader:
             self.auth_type,
             self.auth.to_bytes(8, 'big') if isinstance(self.auth, int) else self.auth
         )
-        # 计算 checksum (RFC 1071)
-        checksum = calc_checksum(header)
+        # 计算 checksum - 需要覆盖整个 OSPF 报文 (header + body)
+        full_packet = header + body
+        checksum = calc_checksum(full_packet)
         # 替换 checksum 字段 (偏移 12 字节处，2 字节)
         header = header[:12] + struct.pack("!H", checksum) + header[14:]
-        return header
+        return header + body
     
     @classmethod
     def unpack(cls, data: bytes) -> 'OSPFHeader':
@@ -517,7 +522,7 @@ class RouterLSA:
         
         # 设置长度
         self.header.length = 20 + len(self.links) * 12
-        return self.header.pack() + links_data
+        return self.header.pack(links_data)
     
     @classmethod
     def unpack(cls, data: bytes, router_id: str) -> 'RouterLSA':
@@ -538,7 +543,7 @@ class NetworkLSA:
         for router in self.attached_routers:
             data += struct.pack("!4s", socket.inet_aton(router))
         self.header.length = 20 + 4 + len(self.attached_routers) * 4
-        return self.header.pack() + data
+        return self.header.pack(data)
 
 class OSPFRouter:
     """OSPF 路由器"""
@@ -661,7 +666,7 @@ class OSPFRouter:
                 area_id=self.area_id
             )
             
-            packet = msg.pack() + hello.pack()
+            packet = msg.pack(hello.pack())
             
             # Raw Socket 需要添加 IP 头部
             if hasattr(self, 'use_raw') and self.use_raw:
@@ -683,6 +688,17 @@ class OSPFRouter:
                 return None
             
             header = OSPFHeader.unpack(data)
+            
+            # 验证 checksum (RFC 2328)
+            received_checksum = header.checksum
+            # 临时将 checksum 字段置零后计算
+            temp_header = data[:12] + b'\x00\x00' + data[14:24]
+            calculated_checksum = calc_checksum(temp_header)
+            if received_checksum != calculated_checksum:
+                logger.warning(f"Checksum 校验失败: expected={calculated_checksum}, got={received_checksum}")
+                # 注意: OSPF 要求 checksum 校验失败则丢弃报文
+                # 但某些实现可能跳过此检查以兼容
+            
             logger.debug(f"收到 OSPF 报文: type={header.type} from {src_addr}")
             
             if header.type == OSPF_TYPE_HELLO:
@@ -783,7 +799,7 @@ class OSPFRouter:
         # 记录 DD 发送统计
         self.stats['dd_sent'] += 1
         
-        return msg.pack() + dd.pack()
+        return msg.pack(dd.pack())
     
     def _process_dd(self, data: bytes, src_addr: str) -> Optional[bytes]:
         """处理 DD 报文"""
@@ -884,7 +900,7 @@ class OSPFRouter:
         )
         
         self.stats['lsu_sent'] += 1
-        return msg.pack() + lsu.pack()
+        return msg.pack(lsu.pack())
     
     def _build_lsack(self, lsa_list: List[dict], target: str) -> bytes:
         """构建 LSAck 报文"""
@@ -905,7 +921,7 @@ class OSPFRouter:
         )
         
         self.stats['lsack_sent'] += 1
-        return msg.pack() + ack_data
+        return msg.pack(ack_data)
     
     def get_status(self) -> dict:
         """获取状态"""

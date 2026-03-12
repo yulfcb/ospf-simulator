@@ -170,6 +170,8 @@ class OSPFGUI(QMainWindow):
         self.iface_table = QTableWidget()
         self.iface_table.setColumnCount(5)
         self.iface_table.setHorizontalHeaderLabels(["接口", "IP", "掩码", "Cost", "状态"])
+        self.iface_table.horizontalHeader().setStretchLastSection(True)
+        self.iface_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         status_layout.addWidget(QLabel("接口状态:"))
         status_layout.addWidget(self.iface_table)
         
