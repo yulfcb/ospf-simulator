@@ -826,7 +826,9 @@ class OSPFRouter:
         
         # 转换到 EXSTART 状态
         self.neighbors[neighbor_id]['state'] = NeighborState.EXSTART
-        self.neighbors[neighbor_id]['dd_sequence'] = random.randint(1, 0x7FFFFFFF)
+        # 只在首次生成随机序列号
+        if 'dd_sequence' not in self.neighbors[neighbor_id]:
+            self.neighbors[neighbor_id]['dd_sequence'] = random.randint(1, 0x7FFFFFFF)
         
         # RFC 2328: 初始 DD，双方都认为自己是 Master (MS=1)
         # 等收到对方的初始 DD 后再选举 Master/Slave
