@@ -829,29 +829,25 @@ class OSPFRouter:
         self.neighbors[neighbor_id]['dd_sequence'] = random.randint(1, 0x7FFFFFFF)
         
         # Master/Slave 选举: 
-        # 1. 如果我的 priority=0，永不当 Master
-        # 2. 否则比较 router_id，高的成为 Master
+        # 1. 如果 priority=0，永不当 Master
+        # 2. 否则 router_id 大的为 Master
         my_id = int.from_bytes(socket.inet_aton(self.router_id), 'big')
         peer_id = int.from_bytes(socket.inet_aton(neighbor_id), 'big')
         
         if self.router_priority == 0:
-            is_master = False  # 不想当 Master
+            self.neighbors[neighbor_id]['is_master'] = False
+        elif peer_id > my_id:
+            self.neighbors[neighbor_id]['is_master'] = False  # 对方是 Master
         else:
-            is_master = my_id > peer_id
+            self.neighbors[neighbor_id]['is_master'] = True   # 我是 Master
         
-        # MS=1 表示 Master, MS=0 表示 Slave
-        # 初始DD报文，MS=0 (RFC 2328)
-        ms_bit = 0x00  # 初始DD报文，MS必须为0
-        flags = 0x05 | ms_bit  # I=1, M=1, MS=0
-        
-        logger.info(f"开始 DD 交换 with {neighbor_id}")
-        
-        # 发送 DD 报文 (初始 DD，I=1, M=1, MS=根据router_id)
+        # 发送初始 DD 报文 (I=1, M=1, MS=1)
+        # RFC 2328: 初始 DD 必须包含空 LSA 列表
         dd = DDPacket(
-            interface_mtu=1500,  # 默认 MTU
+            interface_mtu=1500,
             options=0x02,
             dd_sequence=self.neighbors[neighbor_id]['dd_sequence'],
-            flags=flags
+            flags=0x07  # I=1, M=1, MS=1 (初始 DD)
         )
         
         msg = OSPFHeader(
@@ -882,46 +878,83 @@ class OSPFRouter:
         
         current_state = self.neighbors[src_addr].get('state', NeighborState.INIT)
         
-        # EXSTART 状态 - 选举 Master/Slave
+        # 处理 EXSTART 状态 (RFC 2328 Section 10.8)
         if current_state == NeighborState.EXSTART:
-            # 如果收到初始 DD (I=1)，说明对方也是 EXSTART，开始选举
-            if i_bit:
-                # Master/Slave 选举 (router_id 大的为 Master)
+            # 检查是否已经选举了 Master/Slave
+            if 'is_master' not in self.neighbors[src_addr]:
+                # 首次收到 DD，进行 Master/Slave 选举
                 my_id = int.from_bytes(socket.inet_aton(self.router_id), 'big')
                 peer_id = int.from_bytes(socket.inet_aton(src_addr), 'big')
                 
-                # 如果 priority=0，永不当 Master
                 if self.router_priority == 0:
                     self.neighbors[src_addr]['is_master'] = False
                 elif peer_id > my_id:
                     self.neighbors[src_addr]['is_master'] = False  # 对方是 Master
                 else:
-                    self.neighbors[src_addr]['is_master'] = True  # 我是 Master
-                
-                # 进入 EXCHANGE 状态
+                    self.neighbors[src_addr]['is_master'] = True   # 我是 Master
+            
+            # 等待收到对方的初始 DD (I=1) 后，进入 EXCHANGE
+            if i_bit:
                 self.neighbors[src_addr]['state'] = NeighborState.EXCHANGE
-                # 设置 DD sequence
-                if self.neighbors[src_addr].get('is_master'):
+                # Master 驱动序列号
+                if self.neighbors[src_addr]['is_master']:
                     self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
                 else:
-                    self.neighbors[src_addr]['dd_sequence'] = random.randint(1, 0x7FFFFFFF)
-        
-        # EXCHANGE 状态 - 交换 DD
-        if current_state in [NeighborState.EXSTART, NeighborState.EXCHANGE]:
-            self.neighbors[src_addr]['state'] = NeighborState.EXCHANGE
-            self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
-            
-            # 发送 DD 响应
-            is_master = self.neighbors[src_addr].get('is_master', False)
-            
-            # 如果 I=1，这是初始 DD，我们需要回复我们的 DD
-            if i_bit:
-                # 发送我们的 DD 报文
+                    # Slave 使用 Master 的序列号
+                    self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
+                
+                # 发送我们的初始 DD (I=0, M=1, MS=0/1)
+                is_master = self.neighbors[src_addr]['is_master']
                 my_dd = DDPacket(
                     interface_mtu=1500,
                     options=0x02,
                     dd_sequence=self.neighbors[src_addr]['dd_sequence'],
-                    flags=0x02 if is_master else 0x00  # I=0, M=?, MS=?
+                    flags=0x03 if is_master else 0x02  # I=0, M=1, MS=根据角色
+                )
+                
+                msg = OSPFHeader(
+                    type=OSPF_TYPE_DD,
+                    length=24 + len(my_dd.pack()),
+                    router_id=self.router_id,
+                    area_id=self.area_id
+                )
+                self.stats['dd_sent'] += 1
+                logger.info(f"发送 DD to {src_addr}, I=0, M=1, MS={1 if is_master else 0}, seq={self.neighbors[src_addr]['dd_sequence']}")
+                return msg.pack(my_dd.pack())
+        
+        # 处理 EXCHANGE 状态
+        if current_state == NeighborState.EXCHANGE:
+            is_master = self.neighbors[src_addr].get('is_master', False)
+            
+            # 更新序列号 (Master 驱动)
+            if is_master:
+                self.neighbors[src_addr]['dd_sequence'] += 1
+            else:
+                # Slave 必须使用 Master 的序列号
+                self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
+            
+            # 检查是否 DD 交换完成 (M=0)
+            if not m_bit:
+                # 检查是否双方都完成了 DD 交换
+                if not self.neighbors[src_addr].get('dd_done', False):
+                    self.neighbors[src_addr]['dd_done'] = True
+                
+                # 如果对方 M=0，进入 LOADING
+                self.neighbors[src_addr]['state'] = NeighborState.LOADING
+                logger.info(f"DD 交换完成，进入 LOADING 状态")
+                
+                # 发送我们的 LSU
+                lsa_list = list(self.lsdb.values())
+                if lsa_list:
+                    return self._build_lsu(lsa_list, src_addr)
+            else:
+                # 对方还有更多 DD，继续交换
+                # 发送 DD 响应 (带 LSA 头部)
+                my_dd = DDPacket(
+                    interface_mtu=1500,
+                    options=0x02,
+                    dd_sequence=self.neighbors[src_addr]['dd_sequence'],
+                    flags=0x02 if is_master else 0x00  # I=0, M=1, MS=根据角色
                 )
                 
                 msg = OSPFHeader(
@@ -932,14 +965,6 @@ class OSPFRouter:
                 )
                 self.stats['dd_sent'] += 1
                 return msg.pack(my_dd.pack())
-            
-            # 如果 M=0，说明 DD 交换完成，进入 LOADING
-            if not m_bit:
-                self.neighbors[src_addr]['state'] = NeighborState.LOADING
-                # 发送 LSU
-                lsa_list = list(self.lsdb.values())
-                if lsa_list:
-                    return self._build_lsu(lsa_list, src_addr)
         
         return None
     
