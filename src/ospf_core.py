@@ -314,7 +314,7 @@ class HelloPacket:
 class DDPacket:
     options: int = 0x02
     dd_sequence: int = 0
-    flags: int = 0x07  # I, M, MS
+    flags: int = 0  # R=0, I=0, M=0, MS=0
     interface_mtu: int = 1500  # Interface MTU
     lsa_headers: List[dict] = field(default_factory=list)  # LSA 头部列表
     
@@ -924,18 +924,19 @@ class OSPFRouter:
         if current_state == NeighborState.EXCHANGE:
             is_master = self.neighbors[src_addr].get('is_master', False)
             
-            # 更新序列号 (Master 驱动)
+            # RFC 2328: Master 驱动序列号
+            # Master: 收到 Slave 的 DD 后，序列号 +1
+            # Slave: 使用 Master 的序列号
             if is_master:
-                self.neighbors[src_addr]['dd_sequence'] += 1
+                # Master: 更新序列号
+                self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence + 1
             else:
-                # Slave 必须使用 Master 的序列号
+                # Slave: 使用 Master 的序列号
                 self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
             
             # 检查是否 DD 交换完成 (M=0)
             if not m_bit:
-                # 检查是否双方都完成了 DD 交换
-                if not self.neighbors[src_addr].get('dd_done', False):
-                    self.neighbors[src_addr]['dd_done'] = True
+                self.neighbors[src_addr]['dd_done'] = True
                 
                 # 如果对方 M=0，进入 LOADING
                 self.neighbors[src_addr]['state'] = NeighborState.LOADING
@@ -947,12 +948,15 @@ class OSPFRouter:
                     return self._build_lsu(lsa_list, src_addr)
             else:
                 # 对方还有更多 DD，继续交换
-                # 发送 DD 响应 (带 LSA 头部)
+                # 发送 DD 响应
+                # Master: M=1->0x03, M=0->0x01
+                # Slave: M=1->0x02, M=0->0x00
+                flags = 0x03 if is_master else 0x02  # M=1
                 my_dd = DDPacket(
                     interface_mtu=1500,
                     options=0x02,
                     dd_sequence=self.neighbors[src_addr]['dd_sequence'],
-                    flags=0x02 if is_master else 0x00  # I=0, M=1, MS=根据角色
+                    flags=flags
                 )
                 
                 msg = OSPFHeader(
@@ -962,6 +966,7 @@ class OSPFRouter:
                     area_id=self.area_id
                 )
                 self.stats['dd_sent'] += 1
+                logger.info(f"发送 DD to {src_addr}, I=0, M=1, MS={1 if is_master else 0}, seq={self.neighbors[src_addr]['dd_sequence']}")
                 return msg.pack(my_dd.pack())
         
         return None
