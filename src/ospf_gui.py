@@ -361,7 +361,11 @@ class OSPFGUI(QMainWindow):
         
         # 泛洪 LSA 到所有邻居
         if self.simulator.sock:
-            self.simulator.router.flood_lsa(self.simulator.sock)
+            self.simulator.router.flood_lsa(
+                self.simulator.sock,
+                use_raw=self.simulator.use_raw,
+                add_ip_header_func=self.simulator._add_ip_header
+            )
             QMessageBox.information(self, "成功", "LSA 已注入到邻居")
         else:
             QMessageBox.warning(self, "错误", "OSPF 未运行")

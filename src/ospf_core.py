@@ -488,6 +488,7 @@ class OSPFRouter:
         self.lsdb: Dict[str, dict] = {}  # LSDB
         self.routes: Dict[str, dict] = {}  # 路由表
         self.lock = threading.Lock()
+        self.use_raw = True  # 默认使用 Raw Socket，由 simulator 初始化时设置
         
         # 统计
         self.stats = {
@@ -935,6 +936,9 @@ class OSPFSimulator:
         else:
             self.sock.setsockopt(socket.IPPROTO_IP, socket.IP_HDRINCL, 1)  # 手动构造 IP 头部
             self.use_raw = True
+        
+        # 同步 use_raw 设置到 router
+        self.router.use_raw = self.use_raw
         
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('0.0.0.0', 89))
