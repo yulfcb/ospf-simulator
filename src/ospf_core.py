@@ -692,12 +692,8 @@ class OSPFRouter:
     def send_hello(self, sock: socket.socket, target: str = ALL_SPF_ROUTERS):
         """发送 Hello 报文"""
         for iface_name, iface in self.interfaces.items():
-            # 收集 Active Neighbor (2-way 及以上状态)
-            neighbor_list = []
-            for nid, ninfo in self.neighbors.items():
-                if ninfo.get('state') in [NeighborState.TWOWAY, NeighborState.EXSTART, 
-                                          NeighborState.EXCHANGE, NeighborState.LOADING, NeighborState.FULL]:
-                    neighbor_list.append(nid)
+            # 收集所有已知邻居的 router_id
+            neighbor_list = list(self.neighbors.keys())
             
             hello = HelloPacket(
                 network_mask=iface['netmask'],
@@ -736,13 +732,20 @@ class OSPFRouter:
                 logger.debug(f"忽略来自自己的报文: {src_addr}")
                 return None
             
+            # 过滤来自自己接口IP的报文
+            my_ips = [iface['ip'] for iface in self.interfaces.values()]
+            if src_addr in my_ips:
+                logger.debug(f"忽略来自自己接口的报文: {src_addr}")
+                return None
+            
             header = OSPFHeader.unpack(data)
             
             # 验证 checksum (RFC 2328)
+            # 需要校验整个 OSPF 报文 (header + body)
             received_checksum = header.checksum
-            # 临时将 checksum 字段置零后计算
-            temp_header = data[:12] + b'\x00\x00' + data[14:24]
-            calculated_checksum = calc_checksum(temp_header)
+            # 把 header 中的 checksum 字段置零后计算整个报文
+            temp_data = data[:12] + b'\x00\x00' + data[14:]
+            calculated_checksum = calc_checksum(temp_data)
             if received_checksum != calculated_checksum:
                 logger.warning(f"Checksum 校验失败: expected={calculated_checksum}, got={received_checksum}")
                 # 注意: OSPF 要求 checksum 校验失败则丢弃报文
@@ -780,8 +783,12 @@ class OSPFRouter:
         
         response = None
         
-        # 检查发送者的 Hello 报文中是否包含我们的 router_id (2-way 通信确认)
-        if self.router_id in hello.neighbor:
+        # 检查发送者的 Hello 报文中是否包含我们的接口 IP (2-way 通信确认)
+        # 获取我们自己的接口 IP
+        my_ips = [iface['ip'] for iface in self.interfaces.values()]
+        is_2way = any(ip in hello.neighbor for ip in my_ips)
+        
+        if is_2way:
             # 对方已经看到了我们的 Hello，达成 2-way 通信
             if src_addr not in self.neighbors:
                 self.neighbors[src_addr] = {
