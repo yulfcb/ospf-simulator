@@ -835,7 +835,7 @@ class OSPFRouter:
             interface_mtu=1500,
             options=0x02,
             dd_sequence=self.neighbors[neighbor_id]['dd_sequence'],
-            flags=0x07  # I=1, M=1, MS=1 (初始 DD，双方都认为自己是 Master)
+            flags=0x70  # I=1, M=1, MS=1 (初始 DD，双方都认为自己是 Master)
         )
         
         msg = OSPFHeader(
@@ -895,7 +895,7 @@ class OSPFRouter:
                     interface_mtu=1500,
                     options=0x02,
                     dd_sequence=self.neighbors[src_addr]['dd_sequence'],
-                    flags=0x03 if is_master else 0x02  # I=0, M=1, MS=根据角色
+                    flags=0x50 if is_master else 0x30  # I=0, M=1, MS=根据角色 (0x50=Master, 0x30=Slave)
                 )
                 
                 msg = OSPFHeader(
@@ -924,22 +924,42 @@ class OSPFRouter:
             
             # 检查是否 DD 交换完成 (M=0)
             if not m_bit:
+                # 对方发送最后一个 DD，回复确认
                 self.neighbors[src_addr]['dd_done'] = True
                 
-                # 如果对方 M=0，进入 LOADING
+                # 发送最后 DD (M=0) 确认
+                flags = 0x10 if is_master else 0x00  # M=0
+                my_dd = DDPacket(
+                    interface_mtu=1500,
+                    options=0x02,
+                    dd_sequence=self.neighbors[src_addr]['dd_sequence'],
+                    flags=flags
+                )
+                
+                msg = OSPFHeader(
+                    type=OSPF_TYPE_DD,
+                    length=24 + len(my_dd.pack()),
+                    router_id=self.router_id,
+                    area_id=self.area_id
+                )
+                self.stats['dd_sent'] += 1
+                logger.info(f"发送最后 DD to {src_addr}, I=0, M=0, MS={1 if is_master else 0}, seq={self.neighbors[src_addr]['dd_sequence']}")
+                response = msg.pack(my_dd.pack())
+                
+                # 进入 LOADING 状态
                 self.neighbors[src_addr]['state'] = NeighborState.LOADING
                 logger.info(f"DD 交换完成，进入 LOADING 状态")
                 
                 # 发送我们的 LSU
                 lsa_list = list(self.lsdb.values())
                 if lsa_list:
-                    return self._build_lsu(lsa_list, src_addr)
+                    lsu = self._build_lsu(lsa_list, src_addr)
+                    return response + lsu if response else lsu
+                return response
             else:
                 # 对方还有更多 DD，继续交换
                 # 发送 DD 响应
-                # Master: M=1->0x03, M=0->0x01
-                # Slave: M=1->0x02, M=0->0x00
-                flags = 0x03 if is_master else 0x02  # M=1
+                flags = 0x50 if is_master else 0x30  # M=1
                 my_dd = DDPacket(
                     interface_mtu=1500,
                     options=0x02,
