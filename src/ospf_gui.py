@@ -177,6 +177,8 @@ class OSPFGUI(QMainWindow):
         self.neighbor_table = QTableWidget()
         self.neighbor_table.setColumnCount(4)
         self.neighbor_table.setHorizontalHeaderLabels(["邻居IP", "状态", "DR", "BDR"])
+        self.neighbor_table.horizontalHeader().setStretchLastSection(True)
+        self.neighbor_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         status_layout.addWidget(QLabel("邻居状态:"))
         status_layout.addWidget(self.neighbor_table)
         
@@ -184,6 +186,8 @@ class OSPFGUI(QMainWindow):
         self.route_table = QTableWidget()
         self.route_table.setColumnCount(4)
         self.route_table.setHorizontalHeaderLabels(["网络", "掩码", "下一跳", "类型"])
+        self.route_table.horizontalHeader().setStretchLastSection(True)
+        self.route_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         status_layout.addWidget(QLabel("路由表:"))
         status_layout.addWidget(self.route_table)
         
@@ -232,6 +236,10 @@ class OSPFGUI(QMainWindow):
         """停止 OSPF"""
         if self.simulator:
             self.simulator.stop()
+            # 清理邻居状态
+            self.simulator.router.neighbors.clear()
+            self.simulator.router.routes.clear()
+            self.simulator.router.lsdb.clear()
         self.running = False
         
         self.start_btn.setEnabled(True)
@@ -239,6 +247,11 @@ class OSPFGUI(QMainWindow):
         
         if hasattr(self, 'timer'):
             self.timer.stop()
+        
+        # 清空表格显示
+        self.neighbor_table.setRowCount(0)
+        self.route_table.setRowCount(0)
+        self.stats_text.setPlainText("OSPF 已停止")
         
         QMessageBox.information(self, "成功", "OSPF 模拟器已停止")
     

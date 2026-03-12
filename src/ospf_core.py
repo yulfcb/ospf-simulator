@@ -25,6 +25,26 @@ except ImportError:
     HAS_NETIFACES = False
 
 
+# RFC 1071 checksum calculation (used by OSPF)
+# Returns 16-bit one's complement of one's complement sum
+def calc_checksum(data: bytes) -> int:
+    """Calculate RFC 1071 checksum for OSPF packets"""
+    if len(data) % 2 == 1:
+        data += b'\x00'  # Pad to even length
+    
+    checksum = 0
+    for i in range(0, len(data), 2):
+        word = (data[i] << 8) + data[i + 1]
+        checksum += word
+    
+    # Add carry bits
+    while checksum >> 16:
+        checksum = (checksum & 0xFFFF) + (checksum >> 16)
+    
+    # One's complement
+    return (~checksum) & 0xFFFF
+
+
 def get_system_interfaces() -> Dict[str, dict]:
     """
     获取系统网络接口列表
@@ -196,17 +216,22 @@ class OSPFHeader:
     auth: int = 0
     
     def pack(self) -> bytes:
-        """打包 OSPF 头部"""
+        """打包 OSPF 头部 (含 checksum 计算)"""
+        # 先用 checksum=0 打包
         header = struct.pack("!BBH4s4sHH8s",
             self.version,
             self.type,
             self.length,
             socket.inet_aton(self.router_id),
             socket.inet_aton(self.area_id),
-            self.checksum,
+            0,  # checksum 初始为 0
             self.auth_type,
             self.auth.to_bytes(8, 'big') if isinstance(self.auth, int) else self.auth
         )
+        # 计算 checksum (RFC 1071)
+        checksum = calc_checksum(header)
+        # 替换 checksum 字段 (偏移 12 字节处，2 字节)
+        header = header[:12] + struct.pack("!H", checksum) + header[14:]
         return header
     
     @classmethod
