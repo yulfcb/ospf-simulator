@@ -413,6 +413,18 @@ class LSUPacket:
         # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
         lsa_data = b''
         for entry in self.lsa_entries:
+            # 计算 LSA 校验和 (RFC 1071)
+            lsa_header = struct.pack("!HBB4s4sIIH",
+                entry.get('age', 0),
+                entry.get('options', 0x02),
+                entry.get('type', 1),
+                socket.inet_aton(entry.get('id', '0.0.0.0')),
+                socket.inet_aton(entry.get('adv_router', '0.0.0.0')),
+                entry.get('sequence', 0x80000001),
+                0,  # checksum 初始为 0
+                entry.get('length', 20)
+            )
+            lsa_checksum = calc_checksum(lsa_header)
             lsa = struct.pack("!HBB4s4sIIH",
                 entry.get('age', 0),
                 entry.get('options', 0x02),
@@ -420,7 +432,7 @@ class LSUPacket:
                 socket.inet_aton(entry.get('id', '0.0.0.0')),
                 socket.inet_aton(entry.get('adv_router', '0.0.0.0')),
                 entry.get('sequence', 0x80000001),
-                entry.get('checksum', 0),
+                lsa_checksum,
                 entry.get('length', 20)
             )
             lsa_data += lsa
@@ -433,7 +445,7 @@ class LSUPacket:
             socket.inet_aton(self.adv_router),
             self.sequence,
             self.checksum,
-            self.length
+            self.length if self.length > 0 else 20 + len(lsa_data)
         ) + lsa_data
     
     @classmethod
@@ -779,14 +791,23 @@ class OSPFRouter:
         self.neighbors[neighbor_id]['state'] = NeighborState.EXSTART
         self.neighbors[neighbor_id]['dd_sequence'] = random.randint(1, 0x7FFFFFFF)
         
-        logger.info(f"开始 DD 交换 with {neighbor_id}")
+        # Master/Slave 选举: 比较 router_id, 高的成为 Master
+        my_id = int.from_bytes(socket.inet_aton(self.router_id), 'big')
+        peer_id = int.from_bytes(socket.inet_aton(neighbor_id), 'big')
+        is_master = my_id > peer_id
         
-        # 发送 DD 报文 (初始 DD，I=1, M=1, MS=1)
+        # MS=1 表示 Master, MS=0 表示 Slave
+        ms_bit = 0x02 if is_master else 0x00
+        flags = 0x05 | ms_bit  # I=1, M=1, MS=根据router_id
+        
+        logger.info(f"开始 DD 交换 with {neighbor_id}, 我是{'Master' if is_master else 'Slave'}")
+        
+        # 发送 DD 报文 (初始 DD，I=1, M=1, MS=根据router_id)
         dd = DDPacket(
             interface_mtu=1500,  # 默认 MTU
             options=0x02,
             dd_sequence=self.neighbors[neighbor_id]['dd_sequence'],
-            flags=0x07  # I, M, MS
+            flags=flags
         )
         
         msg = OSPFHeader(
