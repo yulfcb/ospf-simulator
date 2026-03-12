@@ -351,7 +351,8 @@ class LSUPacket:
         """打包 LSU 报文 (含 LSA)"""
         lsa_data = b''
         for entry in self.lsa_entries:
-            lsa = struct.pack("!IH4s4sIIIHH",
+            # LSA entry: I(age) H(type) 4s(id) 4s(adv) I(seq) I(chk) H(len) H(mask) H(rtr) = 28 bytes
+            lsa = struct.pack("!IH4s4sIIHHH",
                 0,  # LSA age
                 entry.get('type', 1),
                 socket.inet_aton(entry.get('id', '0.0.0.0')),
@@ -364,7 +365,7 @@ class LSUPacket:
             )
             lsa_data += lsa
         # LSU 头部: age(2) + type(1) + id(4) + adv_router(4) + sequence(4) + checksum(2) + length(2) = 20 bytes
-        return struct.pack("!IH4s4sIIIH",
+        return struct.pack("!IH4s4sIIH",
             self.age,
             self.type,
             socket.inet_aton(self.id),
@@ -376,11 +377,13 @@ class LSUPacket:
     
     @classmethod
     def unpack(cls, data: bytes) -> 'LSUPacket':
-        header = struct.unpack("!IH4s4sIIIH", data[:24])
+        # LSU header: I(age) H(type) 4s(id) 4s(adv) I(seq) I(chk) H(len) = 24 bytes
+        header = struct.unpack("!IH4s4sIIH", data[:24])
         entries = []
         offset = 24
-        while offset + 20 <= len(data):
-            entry = struct.unpack("!IH4s4sIIIHH", data[offset:offset+24])
+        # LSA entry: I(age) + H(type) + 4s(id) + 4s(adv) + I(seq) + I(chk) + H(len) + H(mask) + H(rtr) = 28 bytes
+        while offset + 28 <= len(data):
+            entry = struct.unpack("!IH4s4sIIHHH", data[offset:offset+28])
             entries.append({
                 'age': entry[0],
                 'type': entry[1],
@@ -614,6 +617,11 @@ class OSPFRouter:
     def process_packet(self, data: bytes, src_addr: str) -> Optional[bytes]:
         """处理收到的 OSPF 报文"""
         try:
+            # 过滤掉来自自己的报文
+            if src_addr == self.router_id:
+                logger.debug(f"忽略来自自己的报文: {src_addr}")
+                return None
+            
             header = OSPFHeader.unpack(data)
             logger.debug(f"收到 OSPF 报文: type={header.type} from {src_addr}")
             
@@ -711,19 +719,22 @@ class OSPFRouter:
             area_id=self.area_id
         )
         
+        # 记录 DD 发送统计
+        self.stats['dd_sent'] += 1
+        
         return msg.pack() + dd.pack()
     
     def _process_dd(self, data: bytes, src_addr: str) -> Optional[bytes]:
         """处理 DD 报文"""
         dd = DDPacket.unpack(data)
         
+        logger.info(f"收到 DD from {src_addr}, sequence={dd.dd_sequence}, flags={dd.flags}")
+        
         # 更新邻居状态
         if src_addr in self.neighbors:
             old_state = self.neighbors[src_addr].get('state')
             self.neighbors[src_addr]['state'] = NeighborState.EXCHANGE
             self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
-        
-        logger.info(f"收到 DD from {src_addr}, sequence={dd.dd_sequence}, flags={dd.flags}")
         
         # 简化的 DD 处理: 直接发送我们的完整 LSDB
         # 在实际 OSPF 中需要比较 DD 中的 LSA 头部来决定请求哪些
@@ -860,6 +871,55 @@ class OSPFRouter:
                     sock.sendto(packet, (neighbor_id, 89))
                 except Exception as e:
                     logger.error(f"泛洪 LSA 失败: {e}")
+    
+    def _build_ip_header(self, payload_len: int, src_ip: str, dst_ip: str) -> bytes:
+        """构建 IP 头部 (OSPF 使用协议号 89)"""
+        version_ihl = 0x45  # Version 4, IHL 5 (20 bytes)
+        tos = 0
+        total_len = 20 + payload_len
+        packet_id = 0
+        flags_fragment = 0
+        ttl = 64
+        protocol = 89  # OSPF
+        checksum = 0
+        
+        src_ip_int = socket.inet_aton(src_ip)
+        dst_ip_int = socket.inet_aton(dst_ip)
+        
+        ip_header = struct.pack("!BBHHHBBH4s4s", 
+            version_ihl, tos, total_len, packet_id, 
+            flags_fragment, ttl, protocol, checksum,
+            src_ip_int, dst_ip_int)
+        checksum = self._ip_checksum(ip_header)
+        ip_header = struct.pack("!BBHHHBBH4s4s", 
+            version_ihl, tos, total_len, packet_id, 
+            flags_fragment, ttl, protocol, checksum,
+            src_ip_int, dst_ip_int)
+        
+        return ip_header
+    
+    @staticmethod
+    def _ip_checksum(header: bytes) -> int:
+        """计算 IP 头部校验和"""
+        checksum = 0
+        for i in range(0, len(header), 2):
+            if i + 1 < len(header):
+                word = (header[i] << 8) + header[i + 1]
+            else:
+                word = header[i] << 8
+            checksum += word
+        while checksum >> 16:
+            checksum = (checksum & 0xFFFF) + (checksum >> 16)
+        return ~checksum & 0xFFFF
+    
+    def _add_ip_header(self, packet: bytes, dst_ip: str) -> bytes:
+        """为 OSPF 报文添加 IP 头部"""
+        src_ip = "0.0.0.0"
+        for iface in self.interfaces.values():
+            src_ip = iface['ip']
+            break
+        ip_header = self._build_ip_header(len(packet), src_ip, dst_ip)
+        return ip_header + packet
 
 
 class OSPFSimulator:
