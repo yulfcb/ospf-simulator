@@ -409,22 +409,39 @@ class LSUPacket:
     
     def pack(self) -> bytes:
         """打包 LSU 报文 (RFC 2328)"""
-        # 先打包 LSA 头部列表 (每个 20 字节)
-        # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
+        # LSA 头部列表
         lsa_data = b''
         for entry in self.lsa_entries:
-            # 计算 LSA 长度 (RFC 2328)
             lsa_type = entry.get('type', 1)
+            
+            # 构建完整的 LSA 主体 (除 header 外的部分)
+            lsa_body = b''
+            
             if lsa_type == 1:  # Router LSA
                 links = entry.get('links', [])
-                lsa_length = 20 + 12 * len(links)  # 20字节头部 + 每个链路12字节
+                # # links (2 bytes)
+                lsa_body = struct.pack("!H", len(links))
+                for link in links:
+                    # Link ID (4) + Link Data (4) + Type (1) + Metric (2) = 11 bytes, pad to 12
+                    link_id = socket.inet_aton(link.get('link_id', '0.0.0.0'))
+                    link_data = socket.inet_aton(link.get('link_data', '0.0.0.0'))
+                    link_type = link.get('type', 3)
+                    metric = link.get('metric', 1)
+                    lsa_body += struct.pack("!4sIBH", link_id, link_data, link_type, metric)
+                
+                lsa_length = 20 + len(lsa_body)  # Header + body
             elif lsa_type == 2:  # Network LSA
                 routers = entry.get('attached_routers', [])
-                lsa_length = 20 + 4 * len(routers)  # 20字节头部 + 每个路由器4字节
+                # Network Mask (4) + 路由器列表
+                network_mask = socket.inet_aton(entry.get('network_mask', '255.255.255.0'))
+                lsa_body = network_mask
+                for r in routers:
+                    lsa_body += socket.inet_aton(r)
+                lsa_length = 20 + len(lsa_body)
             else:
-                lsa_length = 20  # Summary/External LSA
+                lsa_length = 20
             
-            # 计算 LSA 校验和 (RFC 1071)
+            # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
             lsa_header = struct.pack("!HBB4s4sIIH",
                 entry.get('age', 0),
                 entry.get('options', 0x02),
@@ -435,8 +452,11 @@ class LSUPacket:
                 0,  # checksum 初始为 0
                 lsa_length
             )
-            lsa_checksum = calc_checksum(lsa_header)
-            lsa = struct.pack("!HBB4s4sIIH",
+            # 计算整个 LSA 的校验和
+            lsa_checksum = calc_checksum(lsa_header + lsa_body)
+            
+            # 重新打包 header 带正确的 checksum
+            lsa_header = struct.pack("!HBB4s4sIIH",
                 entry.get('age', 0),
                 entry.get('options', 0x02),
                 lsa_type,
@@ -446,8 +466,9 @@ class LSUPacket:
                 lsa_checksum,
                 lsa_length
             )
-            lsa_data += lsa
-        # LSU 报文 = LSA 头部 (20B) + LSA 列表
+            lsa_data += lsa_header + lsa_body
+        
+        # LSU Header
         return struct.pack("!HBB4s4sIIH",
             self.age,
             0,  # options
@@ -846,27 +867,79 @@ class OSPFRouter:
         return msg.pack(dd.pack())
     
     def _process_dd(self, data: bytes, src_addr: str) -> Optional[bytes]:
-        """处理 DD 报文"""
+        """处理 DD 报文 (RFC 2328)"""
         dd = DDPacket.unpack(data)
         
-        logger.info(f"收到 DD from {src_addr}, sequence={dd.dd_sequence}, flags={dd.flags}")
+        i_bit = (dd.flags & 0x04) != 0  # Initial bit
+        m_bit = (dd.flags & 0x02) != 0  # More bit
+        ms_bit = (dd.flags & 0x01) != 0  # Master/Slave bit
         
-        # 更新邻居状态
-        if src_addr in self.neighbors:
-            old_state = self.neighbors[src_addr].get('state')
+        logger.info(f"收到 DD from {src_addr}, I={i_bit}, M={m_bit}, MS={ms_bit}, seq={dd.dd_sequence}")
+        
+        # 确保邻居存在
+        if src_addr not in self.neighbors:
+            self.neighbors[src_addr] = {'state': NeighborState.INIT, 'priority': 1}
+        
+        current_state = self.neighbors[src_addr].get('state', NeighborState.INIT)
+        
+        # EXSTART 状态 - 选举 Master/Slave
+        if current_state == NeighborState.EXSTART:
+            # 如果收到初始 DD (I=1)，说明对方也是 EXSTART，开始选举
+            if i_bit:
+                # Master/Slave 选举 (router_id 大的为 Master)
+                my_id = int.from_bytes(socket.inet_aton(self.router_id), 'big')
+                peer_id = int.from_bytes(socket.inet_aton(src_addr), 'big')
+                
+                # 如果 priority=0，永不当 Master
+                if self.router_priority == 0:
+                    self.neighbors[src_addr]['is_master'] = False
+                elif peer_id > my_id:
+                    self.neighbors[src_addr]['is_master'] = False  # 对方是 Master
+                else:
+                    self.neighbors[src_addr]['is_master'] = True  # 我是 Master
+                
+                # 进入 EXCHANGE 状态
+                self.neighbors[src_addr]['state'] = NeighborState.EXCHANGE
+                # 设置 DD sequence
+                if self.neighbors[src_addr].get('is_master'):
+                    self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
+                else:
+                    self.neighbors[src_addr]['dd_sequence'] = random.randint(1, 0x7FFFFFFF)
+        
+        # EXCHANGE 状态 - 交换 DD
+        if current_state in [NeighborState.EXSTART, NeighborState.EXCHANGE]:
             self.neighbors[src_addr]['state'] = NeighborState.EXCHANGE
             self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
-        
-        # 简化的 DD 处理: 直接发送我们的完整 LSDB
-        # 在实际 OSPF 中需要比较 DD 中的 LSA 头部来决定请求哪些
-        
-        # 转换到 LOADING 状态
-        self._update_neighbor_state(src_addr, NeighborState.LOADING)
-        
-        # 发送 LSU 包含我们的所有 LSA
-        lsa_list = list(self.lsdb.values())
-        if lsa_list:
-            return self._build_lsu(lsa_list, src_addr)
+            
+            # 发送 DD 响应
+            is_master = self.neighbors[src_addr].get('is_master', False)
+            
+            # 如果 I=1，这是初始 DD，我们需要回复我们的 DD
+            if i_bit:
+                # 发送我们的 DD 报文
+                my_dd = DDPacket(
+                    interface_mtu=1500,
+                    options=0x02,
+                    dd_sequence=self.neighbors[src_addr]['dd_sequence'],
+                    flags=0x02 if is_master else 0x00  # I=0, M=?, MS=?
+                )
+                
+                msg = OSPFHeader(
+                    type=OSPF_TYPE_DD,
+                    length=24 + len(my_dd.pack()),
+                    router_id=self.router_id,
+                    area_id=self.area_id
+                )
+                self.stats['dd_sent'] += 1
+                return msg.pack(my_dd.pack())
+            
+            # 如果 M=0，说明 DD 交换完成，进入 LOADING
+            if not m_bit:
+                self.neighbors[src_addr]['state'] = NeighborState.LOADING
+                # 发送 LSU
+                lsa_list = list(self.lsdb.values())
+                if lsa_list:
+                    return self._build_lsu(lsa_list, src_addr)
         
         return None
     
