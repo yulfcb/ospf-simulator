@@ -828,26 +828,14 @@ class OSPFRouter:
         self.neighbors[neighbor_id]['state'] = NeighborState.EXSTART
         self.neighbors[neighbor_id]['dd_sequence'] = random.randint(1, 0x7FFFFFFF)
         
-        # Master/Slave 选举: 
-        # 1. 如果 priority=0，永不当 Master
-        # 2. 否则 router_id 大的为 Master
-        my_id = int.from_bytes(socket.inet_aton(self.router_id), 'big')
-        peer_id = int.from_bytes(socket.inet_aton(neighbor_id), 'big')
-        
-        if self.router_priority == 0:
-            self.neighbors[neighbor_id]['is_master'] = False
-        elif peer_id > my_id:
-            self.neighbors[neighbor_id]['is_master'] = False  # 对方是 Master
-        else:
-            self.neighbors[neighbor_id]['is_master'] = True   # 我是 Master
-        
+        # RFC 2328: 初始 DD，双方都认为自己是 Master (MS=1)
+        # 等收到对方的初始 DD 后再选举 Master/Slave
         # 发送初始 DD 报文 (I=1, M=1, MS=1)
-        # RFC 2328: 初始 DD 必须包含空 LSA 列表
         dd = DDPacket(
             interface_mtu=1500,
             options=0x02,
             dd_sequence=self.neighbors[neighbor_id]['dd_sequence'],
-            flags=0x07  # I=1, M=1, MS=1 (初始 DD)
+            flags=0x07  # I=1, M=1, MS=1 (初始 DD，双方都认为自己是 Master)
         )
         
         msg = OSPFHeader(
