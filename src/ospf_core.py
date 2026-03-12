@@ -837,7 +837,7 @@ class OSPFRouter:
             interface_mtu=1500,
             options=0x02,
             dd_sequence=self.neighbors[neighbor_id]['dd_sequence'],
-            flags=0x0E  # I=1, M=1, MS=1 (初始 DD，双方都认为自己是 Master)
+            flags=0x07  # I=1, M=1, MS=1 (初始 DD，双方都认为自己是 Master)
         )
         
         msg = OSPFHeader(
@@ -856,9 +856,9 @@ class OSPFRouter:
         """处理 DD 报文 (RFC 2328)"""
         dd = DDPacket.unpack(data)
         
-        i_bit = (dd.flags & 0x08) != 0  # Initial bit (bit 3)
-        m_bit = (dd.flags & 0x04) != 0  # More bit (bit 2)
-        ms_bit = (dd.flags & 0x02) != 0  # Master/Slave bit (bit 1)
+        i_bit = (dd.flags & 0x04) != 0  # Initial bit (bit 3)
+        m_bit = (dd.flags & 0x02) != 0  # More bit (bit 2)
+        ms_bit = (dd.flags & 0x01) != 0  # Master/Slave bit (bit 1)
         
         logger.info(f"收到 DD from {src_addr}, I={i_bit}, M={m_bit}, MS={ms_bit}, seq={dd.dd_sequence}")
         
@@ -897,7 +897,7 @@ class OSPFRouter:
                     interface_mtu=1500,
                     options=0x02,
                     dd_sequence=self.neighbors[src_addr]['dd_sequence'],
-                    flags=0x06 if is_master else 0x04  # I=0, M=1, MS=根据角色 (0x06=Master, 0x04=Slave)
+                    flags=0x03 if is_master else 0x02  # I=0, M=1, MS=根据角色 (0x03=Master, 0x02=Slave)
                 )
                 
                 msg = OSPFHeader(
@@ -930,7 +930,7 @@ class OSPFRouter:
                 self.neighbors[src_addr]['dd_done'] = True
                 
                 # 发送最后 DD (M=0) 确认
-                flags = 0x02 if is_master else 0x00  # M=0 (Master=0x02, Slave=0x00)
+                flags = 0x01 if is_master else 0x00  # M=0 (Master=0x01, Slave=0x00)
                 my_dd = DDPacket(
                     interface_mtu=1500,
                     options=0x02,
@@ -961,7 +961,7 @@ class OSPFRouter:
             else:
                 # 对方还有更多 DD，继续交换
                 # 发送 DD 响应
-                flags = 0x06 if is_master else 0x04  # M=1
+                flags = 0x03 if is_master else 0x02  # M=1
                 my_dd = DDPacket(
                     interface_mtu=1500,
                     options=0x02,
