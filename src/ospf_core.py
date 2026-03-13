@@ -1097,8 +1097,9 @@ class OSPFRouter:
                 router_id=self.router_id,
                 area_id=self.area_id
             )
-            # 标记本端是否发送完毕(根据是否还有更多LSA)
-            self.neighbors[neighbor_id]['own_dd_done'] = False
+            # 如果LSDB为空，标记本端已完成DD交换
+            if not self.lsdb:
+                self.neighbors[neighbor_id]['own_dd_done'] = True
             
             self.stats['dd_sent'] += 1
             logger.info(f"发送 DD (带LSA摘要), M=1, seq={seq}")
