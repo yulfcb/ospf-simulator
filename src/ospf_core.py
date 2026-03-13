@@ -1010,13 +1010,14 @@ class OSPFRouter:
                 self.neighbors[neighbor_id]['state'] = NeighborState.EXCHANGE
                 current_state = NeighborState.EXCHANGE
                 
-                # Master收到Slave的初始DD后，序列号+1
-                if is_master:
-                    self.neighbors[neighbor_id]['dd_sequence'] = dd.dd_sequence + 1
-                else:
+                # Master使用自己的序列号，Slave使用Master的序列号
+                if not is_master:
+                    # Slave: 使用Master的序列号
                     self.neighbors[neighbor_id]['dd_sequence'] = dd.dd_sequence
             
-            # 发送DD响应
+            # 发送DD (Master发送时序列号+1)
+            if is_master:
+                self.neighbors[neighbor_id]['dd_sequence'] += 1
             seq = self.neighbors[neighbor_id]['dd_sequence']
             flags = 0x03 if is_master else 0x02  # I=0, M=1, MS=根据角色
             
@@ -1041,13 +1042,11 @@ class OSPFRouter:
         if current_state == NeighborState.EXCHANGE:
             is_master = self.neighbors[neighbor_id].get('is_master', False)
             
-            # Master驱动序列号
+            # Master驱动序列号 - Master使用自己的序列号，Slave使用Master的序列号
             if is_master:
                 # Master: 收到Slave的DD后序列号+1
-                self.neighbors[neighbor_id]['dd_sequence'] = dd.dd_sequence + 1
-            else:
-                # Slave: 使用Master的序列号
-                self.neighbors[neighbor_id]['dd_sequence'] = dd.dd_sequence
+                self.neighbors[neighbor_id]['dd_sequence'] += 1
+            # Slave不做序列号更新，等待Master的序列号
             
             # 检查是否DD交换完成(M=0)
             if not m_bit:
