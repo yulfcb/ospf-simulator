@@ -1043,13 +1043,6 @@ class OSPFRouter:
         if current_state == NeighborState.EXCHANGE:
             is_master = self.neighbors[neighbor_id].get('is_master', False)
             
-            # 检查重复DD报文（序列号相同）
-            last_seq = self.neighbors[neighbor_id].get('last_dd_seq', -1)
-            if last_seq == dd.dd_sequence:
-                logger.info(f"忽略重复DD报文, seq={dd.dd_sequence}")
-                return None
-            self.neighbors[neighbor_id]['last_dd_seq'] = dd.dd_sequence
-            
             # 检查是否DD交换完成(M=0)
             if not m_bit:
                 # 对方发送最后DD
