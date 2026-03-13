@@ -470,8 +470,10 @@ class LSUPacket:
             )
             lsa_data += lsa_header + lsa_body
         
-        # LSU Header
-        return struct.pack("!HBB4s4sIHH",
+        # LSU Header: # LSAs(4) + LSA Header(20) + LSA Body
+        # 先计算总长度 = 4(数量) + 20(LSU头) + len(lsa_data)
+        total_length = 4 + 20 + len(lsa_data)
+        lsu_header = struct.pack("!HBB4s4sIHH",
             self.age,
             0,  # options
             self.type,
@@ -479,17 +481,22 @@ class LSUPacket:
             socket.inet_aton(self.adv_router),
             self.sequence,
             self.checksum,
-            self.length if self.length > 0 else 20 + len(lsa_data)
-        ) + lsa_data
+            self.length if self.length > 0 else total_length
+        )
+        # 添加LSA数量
+        return struct.pack("!I", len(self.lsa_entries)) + lsu_header + lsa_data
     
     @classmethod
     def unpack(cls, data: bytes) -> 'LSUPacket':
-        # LSU Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2) = 20 bytes
-        if len(data) < 20:
+        # LSU: # LSAs(4) + LSU Header(20) + LSA列表
+        if len(data) < 24:  # 4 + 20
             return cls()
-        header = struct.unpack("!HBB4s4sIHH", data[:20])
+        # 解析LSA数量
+        num_lsas = struct.unpack("!I", data[:4])[0]
+        # 解析LSU Header
+        header = struct.unpack("!HBB4s4sIHH", data[4:24])
         entries = []
-        offset = 20
+        offset = 24  # 从LSU Header之后开始
         # LSA Header: 20 bytes each
         while offset + 20 <= len(data):
             entry = struct.unpack("!HBB4s4sIHH", data[offset:offset+20])
