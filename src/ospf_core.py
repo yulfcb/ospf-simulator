@@ -1025,34 +1025,37 @@ class OSPFRouter:
                 else:
                     self.neighbors[src_addr]['is_master'] = True   # 我是 Master
             
-            # 等待收到对方的初始 DD (I=1) 后，进入 EXCHANGE
+            # RFC 2328: 收到DD后决定是否进入EXCHANGE状态
+            # 如果收到初始DD(I=1)，进入EXCHANGE
+            # 如果不是初始DD但已经在EXSTART状态，也应该回复
             if i_bit:
                 self.neighbors[src_addr]['state'] = NeighborState.EXCHANGE
-                # Master 驱动序列号
-                if self.neighbors[src_addr]['is_master']:
-                    self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
-                else:
-                    # Slave 使用 Master 的序列号
-                    self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
                 
-                # 发送我们的初始 DD (I=0, M=1, MS=0/1)
-                is_master = self.neighbors[src_addr]['is_master']
-                my_dd = DDPacket(
-                    interface_mtu=1500,
-                    options=0x02,
-                    dd_sequence=self.neighbors[src_addr]['dd_sequence'],
-                    flags=0x03 if is_master else 0x02  # I=0, M=1, MS=根据角色 (0x03=Master, 0x02=Slave)
-                )
-                
-                msg = OSPFHeader(
-                    type=OSPF_TYPE_DD,
-                    length=24 + len(my_dd.pack()),
-                    router_id=self.router_id,
-                    area_id=self.area_id
-                )
-                self.stats['dd_sent'] += 1
-                logger.info(f"发送 DD to {src_addr}, I=0, M=1, MS={1 if is_master else 0}, seq={self.neighbors[src_addr]['dd_sequence']}")
-                return msg.pack(my_dd.pack())
+            # Master 驱动序列号
+            if self.neighbors[src_addr]['is_master']:
+                self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
+            else:
+                # Slave 使用 Master 的序列号
+                self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
+            
+            # 发送DD响应
+            is_master = self.neighbors[src_addr]['is_master']
+            my_dd = DDPacket(
+                interface_mtu=1500,
+                options=0x02,
+                dd_sequence=self.neighbors[src_addr]['dd_sequence'],
+                flags=0x03 if is_master else 0x02  # I=0, M=1, MS=根据角色
+            )
+            
+            msg = OSPFHeader(
+                type=OSPF_TYPE_DD,
+                length=24 + len(my_dd.pack()),
+                router_id=self.router_id,
+                area_id=self.area_id
+            )
+            self.stats['dd_sent'] += 1
+            logger.info(f"发送 DD to {src_addr}, I=0, M=1, MS={1 if is_master else 0}, seq={self.neighbors[src_addr]['dd_sequence']}")
+            return msg.pack(my_dd.pack())
         
         # 处理 EXCHANGE 状态
         if current_state == NeighborState.EXCHANGE:
