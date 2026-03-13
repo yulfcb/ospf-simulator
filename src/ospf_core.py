@@ -320,12 +320,12 @@ class DDPacket:
     
     def pack(self) -> bytes:
         """打包 DD 报文 (RFC 2328 Appendix A)"""
-        # DD Header: MTU(2) + Options(1) + DD Sequence(4) + Flags(1) = 8 bytes
-        dd_header = struct.pack("!HBIB",
+        # DD Header: MTU(2) + Options(1) + Flags(1) + DD Sequence(4) = 8 bytes
+        dd_header = struct.pack("!HBB I",
             self.interface_mtu,
             self.options,
-            self.dd_sequence,
-            self.flags
+            self.flags,
+            self.dd_sequence
         )
         # 追加 LSA 头部 (每个 20 字节)
         # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
@@ -349,7 +349,7 @@ class DDPacket:
         if len(data) < 8:
             return cls()
         # 解析 DD Header
-        mtu, opts, seq, flags = struct.unpack("!HBIB", data[:8])
+        mtu, opts, flags, seq = struct.unpack("!HBB I", data[:8])
         # 解析 LSA Headers (每个 20 字节)
         lsa_headers = []
         offset = 8
