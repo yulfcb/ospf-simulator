@@ -634,23 +634,7 @@ class LSAHeader:
             checksum=fields[6],
             length=fields[7]
         )
-    
-    @classmethod
-    def unpack(cls, data: bytes) -> 'LSAHeader':
-        """解包 LSA 头部"""
-        if len(data) < 20:
-            return cls()
-        header = struct.unpack("!HBB4s4sIHH", data[:20])
-        return cls(
-            ls_age=header[0],
-            options=header[1],
-            ls_type=header[2],
-            ls_id=socket.inet_ntoa(header[3]),
-            adv_router=socket.inet_ntoa(header[4]),
-            ls_sequence=header[5],
-            checksum=header[6],
-            length=header[7]
-        )
+
 
 class RouterLSA:
     """路由器 LSA (Type 1)"""
@@ -1002,9 +986,10 @@ class OSPFRouter:
         if current_state == NeighborState.EXSTART:
             # 检查是否已经选举了 Master/Slave
             if 'is_master' not in self.neighbors[src_addr]:
-                # RFC 2328: 收到对方初始DD后，比较Router ID决定Master
+                # RFC 2328: 收到对方初始DD后，从OSPF头部获取Router ID决定Master
                 # Router ID 大的为 Master
                 my_id = int.from_bytes(socket.inet_aton(self.router_id), 'big')
+                # 需要从OSPF头部获取peer的router_id，这里暂时用src_addr
                 peer_id = int.from_bytes(socket.inet_aton(src_addr), 'big')
                 
                 # 如果 priority=0，永不当 Master
@@ -1055,10 +1040,10 @@ class OSPFRouter:
             # Master: 收到 Slave 的 DD 后，序列号 +1
             # Slave: 使用 Master 的序列号
             if is_master:
-                # Master: 更新序列号
+                # Master: 收到Slave的DD，序列号+1
                 self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence + 1
             else:
-                # Slave: 使用 Master 的序列号
+                # Slave: 使用Master的序列号
                 self.neighbors[src_addr]['dd_sequence'] = dd.dd_sequence
             
             # 检查是否 DD 交换完成 (M=0)
@@ -1209,10 +1194,14 @@ class OSPFRouter:
         ack_data = b''
         for lsa in lsa_list:
             ack_data += LSAHeader(
+                ls_age=lsa.get('age', 0),
+                options=lsa.get('options', 0x02),
                 ls_type=lsa['type'],
                 ls_id=lsa['id'],
                 adv_router=lsa['adv_router'],
-                ls_sequence=lsa['sequence']
+                ls_sequence=lsa['sequence'],
+                checksum=lsa.get('checksum', 0),
+                length=20  # LSA头部长度
             ).pack()
         
         msg = OSPFHeader(
