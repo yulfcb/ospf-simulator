@@ -84,3 +84,83 @@ cd /code/ospf-simulator
 python3 tests/test_ospf.py
 python3 tests/test_ospf_rfc_flow.py
 ```
+
+---
+
+## OSPF 报文格式详解 (RFC 2328)
+
+### 一、OSPF头部 (24字节，所有报文共用)
+
+| 字段 | 长度 | 说明 |
+|------|------|------|
+| Version | 1 | OSPF版本 (2) |
+| Type | 1 | 报文类型 (1-5) |
+| Packet Length | 2 | 报文总长度 |
+| Router ID | 4 | 路由器ID |
+| Area ID | 4 | 区域ID |
+| Checksum | 2 | 校验和 |
+| Auth Type | 2 | 认证类型 |
+| Authentication | 8 | 认证数据 |
+
+### 二、Hello报文 (Type=1) - 20字节 + N*4
+
+| 字段 | 长度 | 说明 |
+|------|------|------|
+| Network Mask | 4 | 网络掩码 |
+| Hello Interval | 2 | Hello间隔 (10秒) |
+| Options | 1 | 选项 |
+| Priority | 1 | 路由器优先级 |
+| Dead Interval | 4 | 邻居失效时间 |
+| DR | 4 | 指定路由器 |
+| BDR | 4 | 备份指定路由器 |
+| Neighbor List | N*4 | 邻居列表 (每个4字节) |
+
+### 三、DD报文 (Database Description, Type=2) - 8字节 + N*20
+
+| 字段 | 长度 | 说明 |
+|------|------|------|
+| Interface MTU | 2 | 接口MTU |
+| Options | 1 | 选项 |
+| Flags | 1 | 标志位 |
+| DD Sequence | 4 | DD序列号 |
+| LSA Headers | N*20 | LSA头部列表 |
+
+**Flags 位含义：**
+- I (Initial): 首个DD (bit 3 = 0x04)
+- M (More): 还有更多 (bit 2 = 0x02)
+- MS (Master/Slave): 主从 (bit 1 = 0x01)
+
+### 四、LSR报文 (Link State Request, Type=3) - 12字节
+
+| 字段 | 长度 | 说明 |
+|------|------|------|
+| LS Type | 4 | LSA类型 |
+| Link State ID | 4 | LSA ID |
+| Advertising Router | 4 | 通告路由器 |
+
+### 五、LSU报文 (Link State Update, Type=4) - 4字节 + N*可变
+
+| 字段 | 长度 | 说明 |
+|------|------|------|
+| # LSAs | 4 | LSA数量 |
+| LSA #1 | 可变 | LSA (头部20字节 + 身体) |
+| LSA #2 | 可变 | ... |
+
+**LSA头部 (每个LSA前20字节)：**
+| 字段 | 长度 | 说明 |
+|------|------|------|
+| LS Age | 2 | LSA年龄 |
+| Options | 1 | 选项 |
+| LS Type | 1 | LSA类型 |
+| Link State ID | 4 | LSA ID |
+| Adv Router | 4 | 通告路由器 |
+| LS Sequence | 4 | 序列号 |
+| Checksum | 2 | 校验和 |
+| Length | 2 | 长度 |
+
+### 六、LSAck报文 (Link State Acknowledge, Type=5) - N*20
+
+| 字段 | 长度 | 说明 |
+|------|------|------|
+| LSA Headers | N*20 | LSA头部列表 |
+

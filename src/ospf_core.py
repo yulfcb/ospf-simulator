@@ -536,6 +536,23 @@ class LSAHeader:
             self.checksum,
             self.length
         )
+    
+    @classmethod
+    def unpack(cls, data: bytes) -> 'LSAHeader':
+        """解包 LSA 头部"""
+        if len(data) < 20:
+            return cls()
+        header = struct.unpack("!HBB4s4sIHH", data[:20])
+        return cls(
+            ls_age=header[0],
+            options=header[1],
+            ls_type=header[2],
+            ls_id=socket.inet_ntoa(header[3]),
+            adv_router=socket.inet_ntoa(header[4]),
+            ls_sequence=header[5],
+            checksum=header[6],
+            length=header[7]
+        )
 
 class RouterLSA:
     """路由器 LSA (Type 1)"""
