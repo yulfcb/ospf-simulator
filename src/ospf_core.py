@@ -548,13 +548,46 @@ class LSUPacket:
                     offset_r += 4
                 entry_data['attached_routers'] = routers
                 
-            elif lsa_type in (3, 4, 5):  # Summary/External LSA
+            elif lsa_type == 3:  # Network Summary LSA (Summary LSA)
+                # Network Mask (4) + metric (4) = 8 bytes
                 if len(body) >= 4:
                     entry_data['network_mask'] = socket.inet_ntoa(body[:4])
-                if lsa_type == 5 and len(body) >= 12:
+                if len(body) >= 8:
+                    entry_data['metric'] = struct.unpack("!I", body[4:8])[0]
+                    
+            elif lsa_type == 4:  # ASBR Summary LSA
+                # Network Mask (4) + metric (4) = 8 bytes  
+                if len(body) >= 4:
+                    entry_data['network_mask'] = socket.inet_ntoa(body[:4])
+                if len(body) >= 8:
+                    entry_data['metric'] = struct.unpack("!I", body[4:8])[0]
+                    
+            elif lsa_type == 5:  # AS External LSA (External LSA)
+                # Network Mask (4) + E-bit (1) + metric (4) + Forwarding Address (4) + External Route Tag (4) = 17+ bytes
+                if len(body) >= 4:
+                    entry_data['network_mask'] = socket.inet_ntoa(body[:4])
+                if len(body) >= 5:
                     entry_data['e_bit'] = (body[4] & 0x80) >> 7
-                    entry_data['forwarding_address'] = socket.inet_ntoa(body[5:9]) if body[5:9] != b'\x00\x00\x00\x00' else '0.0.0.0'
-                    entry_data['external_route_tag'] = struct.unpack("!I", body[9:13])[0] if len(body) >= 13 else 0
+                if len(body) >= 9:
+                    entry_data['metric'] = struct.unpack("!I", body[5:9])[0]
+                if len(body) >= 13:
+                    fa = body[9:13]
+                    entry_data['forwarding_address'] = socket.inet_ntoa(fa) if fa != b'\x00\x00\x00\x00' else '0.0.0.0'
+                if len(body) >= 17:
+                    entry_data['external_route_tag'] = struct.unpack("!I", body[13:17])[0]
+                    
+            elif lsa_type == 7:  # NSSA External LSA
+                # 类似Type 5但用于NSSA区域
+                if len(body) >= 4:
+                    entry_data['network_mask'] = socket.inet_ntoa(body[:4])
+                if len(body) >= 5:
+                    entry_data['p_bit'] = (body[4] & 0x80) >> 7
+                if len(body) >= 9:
+                    entry_data['metric'] = struct.unpack("!I", body[5:9])[0]
+                if len(body) >= 17:
+                    entry_data['forwarding_address'] = socket.inet_ntoa(body[13:17])
+                if len(body) >= 21:
+                    entry_data['external_route_tag'] = struct.unpack("!I", body[17:21])[0]
             
             entries.append(entry_data)
             # 按LSA总长度跳转
