@@ -742,6 +742,18 @@ class OSPFRouter:
             'dr': '0.0.0.0',
             'bdr': '0.0.0.0'
         }
+        
+        # 添加接口到Router LSA (以太网络使用type=3 stub network)
+        network = self._calc_network(ip, netmask)
+        lsa_key = f"1-{self.router_id}"
+        if lsa_key in self.lsdb:
+            self.lsdb[lsa_key]['links'].append({
+                'link_id': network,
+                'link_data': ip,
+                'type': 3,  # stub network
+                'metric': cost
+            })
+        
         logger.info(f"添加接口 {name}: {ip}/{netmask}")
     
     def _calc_network(self, ip: str, mask: str) -> str:
