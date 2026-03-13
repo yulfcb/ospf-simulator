@@ -331,7 +331,7 @@ class DDPacket:
         # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
         lsa_data = b''
         for lsa in self.lsa_headers:
-            lsa_header = struct.pack("!HBB4s4sIIH",
+            lsa_header = struct.pack("!HBB4s4sIHH",
                 lsa.get('age', 0),
                 lsa.get('options', 0x02),
                 lsa.get('type', 1),
@@ -354,7 +354,7 @@ class DDPacket:
         lsa_headers = []
         offset = 8
         while offset + 20 <= len(data):
-            lsa = struct.unpack("!HBB4s4sIIH", data[offset:offset+20])
+            lsa = struct.unpack("!HBB4s4sIHH", data[offset:offset+20])
             lsa_headers.append({
                 'age': lsa[0],
                 'options': lsa[1],
@@ -442,7 +442,7 @@ class LSUPacket:
                 lsa_length = 20
             
             # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
-            lsa_header = struct.pack("!HBB4s4sIIH",
+            lsa_header = struct.pack("!HBB4s4sIHH",
                 entry.get('age', 0),
                 entry.get('options', 0x02),
                 lsa_type,
@@ -456,7 +456,7 @@ class LSUPacket:
             lsa_checksum = calc_checksum(lsa_header + lsa_body)
             
             # 重新打包 header 带正确的 checksum
-            lsa_header = struct.pack("!HBB4s4sIIH",
+            lsa_header = struct.pack("!HBB4s4sIHH",
                 entry.get('age', 0),
                 entry.get('options', 0x02),
                 lsa_type,
@@ -469,7 +469,7 @@ class LSUPacket:
             lsa_data += lsa_header + lsa_body
         
         # LSU Header
-        return struct.pack("!HBB4s4sIIH",
+        return struct.pack("!HBB4s4sIHH",
             self.age,
             0,  # options
             self.type,
@@ -485,12 +485,12 @@ class LSUPacket:
         # LSU Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2) = 20 bytes
         if len(data) < 20:
             return cls()
-        header = struct.unpack("!HBB4s4sIIH", data[:20])
+        header = struct.unpack("!HBB4s4sIHH", data[:20])
         entries = []
         offset = 20
         # LSA Header: 20 bytes each
         while offset + 20 <= len(data):
-            entry = struct.unpack("!HBB4s4sIIH", data[offset:offset+20])
+            entry = struct.unpack("!HBB4s4sIHH", data[offset:offset+20])
             entries.append({
                 'age': entry[0],
                 'options': entry[1],
@@ -525,7 +525,8 @@ class LSAHeader:
     length: int = 0
     
     def pack(self) -> bytes:
-        return struct.pack("!HBB4s4sIIIHH",
+        # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2) = 20 bytes
+        return struct.pack("!HBB4s4sIHH",
             self.ls_age,
             self.options,
             self.ls_type,
@@ -533,8 +534,7 @@ class LSAHeader:
             socket.inet_aton(self.adv_router),
             self.ls_sequence,
             self.checksum,
-            self.length,
-            0, 0
+            self.length
         )
 
 class RouterLSA:
