@@ -875,6 +875,14 @@ class OSPFRouter:
         
         current_state = self.neighbors[src_addr].get('state', NeighborState.INIT)
         
+        # RFC 2328: 收到DD报文，无论当前状态如何，都应该处理
+        # 如果状态 < EXSTART，应该进入EXSTART并回复DD
+        if current_state not in (NeighborState.EXSTART, NeighborState.EXCHANGE):
+            # 进入 EXSTART 状态，开始DD交换
+            self.neighbors[src_addr]['state'] = NeighborState.EXSTART
+            current_state = NeighborState.EXSTART
+            logger.info(f"邻居状态 {current_state} -> EXSTART，开始DD交换")
+        
         # 处理 EXSTART 状态 (RFC 2328 Section 10.8)
         if current_state == NeighborState.EXSTART:
             # 检查是否已经选举了 Master/Slave
