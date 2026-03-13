@@ -424,12 +424,12 @@ class LSUPacket:
                 # # links (2 bytes)
                 lsa_body = struct.pack("!H", len(links))
                 for link in links:
-                    # Link ID (4) + Link Data (4) + Type (1) + Metric (2) = 11 bytes, pad to 12
+                    # RFC 2328: #links(2) + TOS(1) + metric(2) + LinkID(4) + LinkData(4) = 13 bytes
                     link_id = socket.inet_aton(link.get('link_id', '0.0.0.0'))
                     link_data = socket.inet_aton(link.get('link_data', '0.0.0.0'))
                     link_type = link.get('type', 3)
                     metric = link.get('metric', 1)
-                    lsa_body += struct.pack("!4sIBH", link_id, link_data, link_type, metric)
+                    lsa_body += struct.pack("!HHB4s4s", link_type, metric, 0, link_id, link_data)
                 
                 lsa_length = 20 + len(lsa_body)  # Header + body
             elif lsa_type == 2:  # Network LSA
@@ -502,19 +502,62 @@ class LSUPacket:
             if offset + 20 > len(data):
                 break
             # 解析LSA Header
-            entry = struct.unpack("!HBB4s4sIHH", data[offset:offset+20])
-            lsa_length = entry[7]  # LSA总长度
-            entries.append({
-                'age': entry[0],
-                'options': entry[1],
-                'type': entry[2],
-                'id': socket.inet_ntoa(entry[3]),
-                'adv_router': socket.inet_ntoa(entry[4]),
-                'sequence': entry[5],
-                'checksum': entry[6],
+            header = struct.unpack("!HBB4s4sIHH", data[offset:offset+20])
+            lsa_type = header[2]
+            lsa_length = header[7]  # LSA总长度
+            
+            # 解析LSA Body (根据类型)
+            body_offset = offset + 20
+            body = data[body_offset:body_offset + lsa_length - 20] if lsa_length > 20 else b''
+            
+            entry_data = {
+                'age': header[0],
+                'options': header[1],
+                'type': lsa_type,
+                'id': socket.inet_ntoa(header[3]),
+                'adv_router': socket.inet_ntoa(header[4]),
+                'sequence': header[5],
+                'checksum': header[6],
                 'length': lsa_length
-            })
-            # 按LSA长度跳转 (Header 20 + Body)
+            }
+            
+            # 根据LSA类型解析Body
+            if lsa_type == 1 and len(body) >= 2:  # Router LSA
+                num_links = struct.unpack("!H", body[:2])[0]
+                links = []
+                link_offset = 2
+                for i in range(num_links):
+                    if link_offset + 13 <= len(body):
+                        link = struct.unpack("!HHB4s4s", body[link_offset:link_offset+13])
+                        links.append({
+                            'link_id': socket.inet_ntoa(link[3]),
+                            'link_data': socket.inet_ntoa(link[4]),
+                            'type': link[0],
+                            'metric': link[1]
+                        })
+                        link_offset += 13
+                entry_data['links'] = links
+                
+            elif lsa_type == 2 and len(body) >= 4:  # Network LSA
+                network_mask = socket.inet_ntoa(body[:4])
+                entry_data['network_mask'] = network_mask
+                routers = []
+                offset_r = 4
+                while offset_r + 4 <= len(body):
+                    routers.append(socket.inet_ntoa(body[offset_r:offset_r+4]))
+                    offset_r += 4
+                entry_data['attached_routers'] = routers
+                
+            elif lsa_type in (3, 4, 5):  # Summary/External LSA
+                if len(body) >= 4:
+                    entry_data['network_mask'] = socket.inet_ntoa(body[:4])
+                if lsa_type == 5 and len(body) >= 12:
+                    entry_data['e_bit'] = (body[4] & 0x80) >> 7
+                    entry_data['forwarding_address'] = socket.inet_ntoa(body[5:9]) if body[5:9] != b'\x00\x00\x00\x00' else '0.0.0.0'
+                    entry_data['external_route_tag'] = struct.unpack("!I", body[9:13])[0] if len(body) >= 13 else 0
+            
+            entries.append(entry_data)
+            # 按LSA总长度跳转
             offset += lsa_length
         return cls(
             age=header[0],
