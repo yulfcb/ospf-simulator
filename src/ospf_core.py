@@ -470,21 +470,8 @@ class LSUPacket:
             )
             lsa_data += lsa_header + lsa_body
         
-        # LSU Header: # LSAs(4) + LSA Header(20) + LSA Body
-        # 先计算总长度 = 4(数量) + 20(LSU头) + len(lsa_data)
-        total_length = 4 + 20 + len(lsa_data)
-        lsu_header = struct.pack("!HBB4s4sIHH",
-            self.age,
-            0,  # options
-            self.type,
-            socket.inet_aton(self.id),
-            socket.inet_aton(self.adv_router),
-            self.sequence,
-            self.checksum,
-            self.length if self.length > 0 else total_length
-        )
-        # 添加LSA数量
-        return struct.pack("!I", len(self.lsa_entries)) + lsu_header + lsa_data
+        # LSU格式: # LSAs(4) + LSA列表（每个LSA = Header 20 + Body）
+        return struct.pack("!I", len(self.lsa_entries)) + lsa_data
     
     @classmethod
     def unpack(cls, data: bytes) -> 'LSUPacket':
@@ -493,10 +480,10 @@ class LSUPacket:
             return cls()
         # 解析LSA数量
         num_lsas = struct.unpack("!I", data[:4])[0]
-        # 解析LSU Header
-        header = struct.unpack("!HBB4s4sIHH", data[4:24])
+        # LSU报文格式: # LSAs(4) + LSA列表（每个LSA = Header 20 + Body）
+        # 不需要单独的LSU Header
         entries = []
-        offset = 24  # 从LSU Header之后开始
+        offset = 4  # 跳过#LSAs后直接是LSA
         # 解析每个LSA (Header 20字节 + Body 可变长度)
         for _ in range(num_lsas):
             if offset + 20 > len(data):
@@ -592,14 +579,17 @@ class LSUPacket:
             entries.append(entry_data)
             # 按LSA总长度跳转
             offset += lsa_length
+        # LSU的元数据从类默认值或从第一个LSA获取
+        first_lsa = entries[0] if entries else {}
+        # LSU元数据使用默认值
         return cls(
-            age=header[0],
-            type=header[2],
-            id=socket.inet_ntoa(header[3]),
-            adv_router=socket.inet_ntoa(header[4]),
-            sequence=header[5],
-            checksum=header[6],
-            length=header[7],
+            age=0,
+            type=1,
+            id="0.0.0.0",
+            adv_router="0.0.0.0",
+            sequence=0,
+            checksum=0,
+            length=4 + sum(e['length'] for e in entries),
             lsa_entries=entries
         )
     
