@@ -329,10 +329,11 @@ class DDPacket:
             self.flags,
             self.dd_sequence
         )
-        # 追加 LSA 头部 (每个 20 字节)
-        # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
+        # 追加 LSA (Header + Body)
+        # RFC 2328: DD报文中包含完整的LSA
         lsa_data = b''
         for lsa in self.lsa_headers:
+            # LSA Header (20 bytes)
             lsa_header = struct.pack("!HBB4s4sIHH",
                 lsa.get('age', 0),
                 lsa.get('options', 0x02),
@@ -343,7 +344,9 @@ class DDPacket:
                 lsa.get('checksum', 0),
                 lsa.get('length', 20)
             )
-            lsa_data += lsa_header
+            # LSA Body (如果有)
+            lsa_body = lsa.get('body', b'')
+            lsa_data += lsa_header + lsa_body
         return dd_header + lsa_data
     
     @classmethod
@@ -1070,17 +1073,71 @@ class OSPFRouter:
             seq = self.neighbors[neighbor_id]['dd_sequence']
             flags = 0x03 if is_master else 0x02  # M=1
             
-            # 构建DD报文，包含自己的LSA摘要
+            # 构建DD报文，包含自己的LSA摘要(完整的LSA，需要计算checksum)
             lsa_headers = []
-            for lsa in self.lsdb.values():
+            for lsa_key, lsa in self.lsdb.items():
+                # 构建完整的LSA并计算checksum
+                lsa_type = lsa.get('type', 1)
+                lsa_body = b''
+                lsa_length = 20
+                
+                if lsa_type == 1:  # Router LSA
+                    links = lsa.get('links', [])
+                    lsa_body = struct.pack("!H", len(links))
+                    for link in links:
+                        lsa_body += struct.pack("!HHB4s4s",
+                            link.get('type', 3),
+                            link.get('metric', 1),
+                            0,  # TOS
+                            socket.inet_aton(link.get('link_id', '0.0.0.0')),
+                            socket.inet_aton(link.get('link_data', '0.0.0.0'))
+                        )
+                    lsa_length = 20 + len(lsa_body)
+                elif lsa_type == 2:  # Network LSA
+                    network_mask = socket.inet_aton(lsa.get('network_mask', '255.255.255.0'))
+                    routers = lsa.get('attached_routers', [])
+                    lsa_body = network_mask
+                    for r in routers:
+                        lsa_body += socket.inet_aton(r)
+                    lsa_length = 20 + len(lsa_body)
+                
+                # LSA Header
+                lsa_header = struct.pack("!HBB4s4sIHH",
+                    lsa.get('age', 0),
+                    lsa.get('options', 0x02),
+                    lsa_type,
+                    socket.inet_aton(lsa.get('id', '0.0.0.0')),
+                    socket.inet_aton(lsa.get('adv_router', '0.0.0.0')),
+                    lsa.get('sequence', 0x80000001),
+                    0,  # checksum初始
+                    lsa_length
+                )
+                
+                # 计算checksum
+                lsa_checksum = calc_checksum(lsa_header + lsa_body)
+                
+                # 重新打包带checksum
+                lsa_header = struct.pack("!HBB4s4sIHH",
+                    lsa.get('age', 0),
+                    lsa.get('options', 0x02),
+                    lsa_type,
+                    socket.inet_aton(lsa.get('id', '0.0.0.0')),
+                    socket.inet_aton(lsa.get('adv_router', '0.0.0.0')),
+                    lsa.get('sequence', 0x80000001),
+                    lsa_checksum,
+                    lsa_length
+                )
+                
                 lsa_headers.append({
-                    'type': lsa.get('type', 1),
+                    'type': lsa_type,
                     'id': lsa.get('id', '0.0.0.0'),
                     'adv_router': lsa.get('adv_router', '0.0.0.0'),
                     'sequence': lsa.get('sequence', 0x80000001),
                     'age': lsa.get('age', 0),
                     'options': lsa.get('options', 0x02),
-                    'length': 20
+                    'length': lsa_length,
+                    'body': lsa_body,
+                    'checksum': lsa_checksum
                 })
             
             my_dd = DDPacket(
