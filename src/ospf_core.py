@@ -1042,62 +1042,55 @@ class OSPFRouter:
         if current_state == NeighborState.EXCHANGE:
             is_master = self.neighbors[neighbor_id].get('is_master', False)
             
-            # Master驱动序列号 - 收到对方DD后+1 (下一次发送用)
-            # Slave使用Master的序列号
-            
             # 检查是否DD交换完成(M=0)
             if not m_bit:
+                # 对方发送最后DD
                 self.neighbors[neighbor_id]['dd_done'] = True
                 
-                # 发送最后DD
-                flags = 0x01 if is_master else 0x00  # M=0
-                seq = self.neighbors[neighbor_id]['dd_sequence']
-                
-                my_dd = DDPacket(
-                    interface_mtu=1500,
-                    options=0x02,
-                    dd_sequence=seq,
-                    flags=flags
-                )
-                
-                msg = OSPFHeader(
-                    type=OSPF_TYPE_DD,
-                    length=24 + len(my_dd.pack()),
-                    router_id=self.router_id,
-                    area_id=self.area_id
-                )
-                self.stats['dd_sent'] += 1
-                logger.info(f"发送最后 DD, M=0, seq={seq}")
-                
-                # 双方都完成DD交换后进入LOADING
-                self.neighbors[neighbor_id]['state'] = NeighborState.LOADING
-                logger.info(f"进入 LOADING 状态")
-                
-                return msg.pack(my_dd.pack())
-            else:
-                # 继续交换DD
-                # Master每次发送前序列号+1
-                if is_master:
-                    self.neighbors[neighbor_id]['dd_sequence'] += 1
-                seq = self.neighbors[neighbor_id]['dd_sequence']
-                flags = 0x03 if is_master else 0x02  # M=1
-                
-                my_dd = DDPacket(
-                    interface_mtu=1500,
-                    options=0x02,
-                    dd_sequence=seq,
-                    flags=flags
-                )
-                
-                msg = OSPFHeader(
-                    type=OSPF_TYPE_DD,
-                    length=24 + len(my_dd.pack()),
-                    router_id=self.router_id,
-                    area_id=self.area_id
-                )
-                self.stats['dd_sent'] += 1
-                logger.info(f"发送 DD, M=1, seq={seq}")
-                return msg.pack(my_dd.pack())
+                # 检查双方是否都完成DD交换
+                if self.neighbors[neighbor_id].get('dd_done'):
+                    # 双方都完成DD交换，进入LOADING
+                    self.neighbors[neighbor_id]['state'] = NeighborState.LOADING
+                    logger.info(f"双方DD交换完成，进入 LOADING 状态")
+                return None
+            
+            # Master收到Slave的DD(MS=0)后，发送自己的LSA摘要
+            if is_master:
+                self.neighbors[neighbor_id]['dd_sequence'] += 1
+            
+            seq = self.neighbors[neighbor_id]['dd_sequence']
+            flags = 0x03 if is_master else 0x02  # M=1
+            
+            # 构建DD报文，包含自己的LSA摘要
+            lsa_headers = []
+            for lsa in self.lsdb.values():
+                lsa_headers.append({
+                    'type': lsa.get('type', 1),
+                    'id': lsa.get('id', '0.0.0.0'),
+                    'adv_router': lsa.get('adv_router', '0.0.0.0'),
+                    'sequence': lsa.get('sequence', 0x80000001),
+                    'age': lsa.get('age', 0),
+                    'options': lsa.get('options', 0x02),
+                    'length': 20
+                })
+            
+            my_dd = DDPacket(
+                interface_mtu=1500,
+                options=0x02,
+                dd_sequence=seq,
+                flags=flags,
+                lsa_headers=lsa_headers
+            )
+            
+            msg = OSPFHeader(
+                type=OSPF_TYPE_DD,
+                length=24 + len(my_dd.pack()),
+                router_id=self.router_id,
+                area_id=self.area_id
+            )
+            self.stats['dd_sent'] += 1
+            logger.info(f"发送 DD (带LSA摘要), M=1, seq={seq}")
+            return msg.pack(my_dd.pack())
         
         return None
     
