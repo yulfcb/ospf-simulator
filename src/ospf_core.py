@@ -1016,7 +1016,10 @@ class OSPFRouter:
             
             # 发送DD
             seq = self.neighbors[neighbor_id]['dd_sequence']
-            flags = 0x03 if is_master else 0x02  # I=0, M=1, MS=根据角色
+            # RFC 2328: 如果双方都声称是Master(I=1, MS=1)，需要继续协商
+            # 本端是Master且对端MS=1时，I位保持1
+            i_flag = 1 if (is_master and ms_bit) else 0
+            flags = (i_flag << 2) | (1 << 1) | (1 if is_master else 0)  # I, M=1, MS
             
             my_dd = DDPacket(
                 interface_mtu=1500,
