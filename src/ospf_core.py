@@ -1133,6 +1133,16 @@ class OSPFRouter:
         """处理 LSU 报文"""
         lsu = LSUPacket.unpack(data)
         
+        # 检查邻居状态 - 只有在Exchange/Loading/Full状态才处理LSU
+        current_state = NeighborState.INIT
+        if src_addr in self.neighbors:
+            current_state = self.neighbors[src_addr].get('state', NeighborState.INIT)
+        
+        # RFC 2328: 只有达到Exchange及以上状态才处理LSU
+        if current_state not in (NeighborState.EXCHANGE, NeighborState.LOADING, NeighborState.FULL):
+            logger.warning(f"邻居状态 {current_state} < EXCHANGE，忽略LSU")
+            return None
+        
         # 更新 LSDB
         for entry in lsu.lsa_entries:
             lsa_key = f"{entry['type']}-{entry['id']}"
