@@ -1042,6 +1042,13 @@ class OSPFRouter:
         if current_state == NeighborState.EXCHANGE:
             is_master = self.neighbors[neighbor_id].get('is_master', False)
             
+            # 检查重复DD报文（序列号相同）
+            last_seq = self.neighbors[neighbor_id].get('last_dd_seq', -1)
+            if last_seq == dd.dd_sequence:
+                logger.info(f"忽略重复DD报文, seq={dd.dd_sequence}")
+                return None
+            self.neighbors[neighbor_id]['last_dd_seq'] = dd.dd_sequence
+            
             # 检查是否DD交换完成(M=0)
             if not m_bit:
                 # 对方发送最后DD
@@ -1054,9 +1061,10 @@ class OSPFRouter:
                     logger.info(f"双方DD交换完成，进入 LOADING 状态")
                 return None
             
-            # Master收到Slave的DD(MS=0)后，发送自己的LSA摘要
+            # Master收到Slave的DD后，发送自己的LSA摘要
             if is_master:
-                self.neighbors[neighbor_id]['dd_sequence'] += 1
+                # Master发送LSA摘要
+                pass  # 继续发送
             
             seq = self.neighbors[neighbor_id]['dd_sequence']
             flags = 0x03 if is_master else 0x02  # M=1
