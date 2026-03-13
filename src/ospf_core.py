@@ -497,9 +497,13 @@ class LSUPacket:
         header = struct.unpack("!HBB4s4sIHH", data[4:24])
         entries = []
         offset = 24  # 从LSU Header之后开始
-        # LSA Header: 20 bytes each
-        while offset + 20 <= len(data):
+        # 解析每个LSA (Header 20字节 + Body 可变长度)
+        for _ in range(num_lsas):
+            if offset + 20 > len(data):
+                break
+            # 解析LSA Header
             entry = struct.unpack("!HBB4s4sIHH", data[offset:offset+20])
+            lsa_length = entry[7]  # LSA总长度
             entries.append({
                 'age': entry[0],
                 'options': entry[1],
@@ -508,9 +512,10 @@ class LSUPacket:
                 'adv_router': socket.inet_ntoa(entry[4]),
                 'sequence': entry[5],
                 'checksum': entry[6],
-                'length': entry[7]
+                'length': lsa_length
             })
-            offset += 20
+            # 按LSA长度跳转 (Header 20 + Body)
+            offset += lsa_length
         return cls(
             age=header[0],
             type=header[2],
