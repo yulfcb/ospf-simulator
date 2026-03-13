@@ -263,6 +263,7 @@ class OSPFHeader:
 class HelloPacket:
     network_mask: str = "0.0.0.0"
     hello_interval: int = 10
+    ls_age: int = 0
     options: int = 0x02
     router_priority: int = 1
     dead_interval: int = 40
@@ -312,6 +313,7 @@ class HelloPacket:
 
 @dataclass
 class DDPacket:
+    ls_age: int = 0
     options: int = 0x02
     dd_sequence: int = 0
     flags: int = 0  # R=0, I=0, M=0, MS=0
@@ -512,7 +514,7 @@ class LSUPacket:
             length=header[7],
             lsa_entries=entries
         )
-
+    
 @dataclass
 class LSAHeader:
     ls_age: int = 0
@@ -525,6 +527,7 @@ class LSAHeader:
     length: int = 0
     
     def pack(self) -> bytes:
+        """打包LSA头部 (20字节)"""
         # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2) = 20 bytes
         return struct.pack("!HBB4s4sIHH",
             self.ls_age,
@@ -535,6 +538,23 @@ class LSAHeader:
             self.ls_sequence,
             self.checksum,
             self.length
+        )
+    
+    @classmethod
+    def unpack(cls, data: bytes) -> 'LSAHeader':
+        """解包LSA头部"""
+        if len(data) < 20:
+            return cls()
+        fields = struct.unpack("!HBB4s4sIHH", data[:20])
+        return cls(
+            ls_age=fields[0],
+            options=fields[1],
+            ls_type=fields[2],
+            ls_id=socket.inet_ntoa(fields[3]),
+            adv_router=socket.inet_ntoa(fields[4]),
+            ls_sequence=fields[5],
+            checksum=fields[6],
+            length=fields[7]
         )
     
     @classmethod
