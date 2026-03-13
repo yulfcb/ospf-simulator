@@ -1052,10 +1052,11 @@ class OSPFRouter:
             # 检查是否DD交换完成(M=0)
             if not m_bit:
                 # 对方发送最后DD
-                self.neighbors[neighbor_id]['dd_done'] = True
+                self.neighbors[neighbor_id]['peer_dd_done'] = True
                 
                 # 检查双方是否都完成DD交换
-                if self.neighbors[neighbor_id].get('dd_done'):
+                if (self.neighbors[neighbor_id].get('peer_dd_done') and 
+                    self.neighbors[neighbor_id].get('own_dd_done')):
                     # 双方都完成DD交换，进入LOADING
                     self.neighbors[neighbor_id]['state'] = NeighborState.LOADING
                     logger.info(f"双方DD交换完成，进入 LOADING 状态")
@@ -1096,6 +1097,9 @@ class OSPFRouter:
                 router_id=self.router_id,
                 area_id=self.area_id
             )
+            # 标记本端是否发送完毕(根据是否还有更多LSA)
+            self.neighbors[neighbor_id]['own_dd_done'] = False
+            
             self.stats['dd_sent'] += 1
             logger.info(f"发送 DD (带LSA摘要), M=1, seq={seq}")
             return msg.pack(my_dd.pack())
