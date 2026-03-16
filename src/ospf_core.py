@@ -478,9 +478,10 @@ class LSUPacket:
                 lsa_body = b''
                 lsa_length = 20
             
-            # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
-            lsa_header = struct.pack("!HBB4s4sIHH",
-                entry.get('age', 0),
+            # RFC 2328 Section 8.1: Checksum 覆盖范围从 LS Age 后（跳过 2 字节的 Age）到 LSA 结束
+            # 即: Options + Type + LS ID + Adv Router + Sequence + Checksum(设为0) + Length + Body
+            # 构建 LSA Header (跳过 LS Age)
+            lsa_header_no_age = struct.pack("!BB4s4sIHH",
                 entry.get('options', 0x02),
                 lsa_type,
                 socket.inet_aton(entry.get('id', '0.0.0.0')),
@@ -489,10 +490,10 @@ class LSUPacket:
                 0,  # checksum 初始为 0
                 lsa_length
             )
-            # 计算整个 LSA 的校验和
-            lsa_checksum = calc_checksum(lsa_header + lsa_body)
+            # 计算 LSA 的校验和 (跳过 LS Age 字段)
+            lsa_checksum = calc_checksum(lsa_header_no_age + lsa_body)
             
-            # 重新打包 header 带正确的 checksum
+            # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
             lsa_header = struct.pack("!HBB4s4sIHH",
                 entry.get('age', 0),
                 entry.get('options', 0x02),
@@ -1273,9 +1274,11 @@ class OSPFRouter:
         # LSA 总长度 = Header(20) + Body
         lsa_length = 20 + len(lsa_body)
         
-        # 构建 LSA Header (用于计算 checksum)
-        lsa_header = struct.pack("!HBB4s4sIHH",
-            lsa.get('age', 0),
+        # RFC 2328 Section 8.1: Checksum 覆盖范围从 LS Age 后（跳过 2 字节的 Age）到 LSA 结束
+        # 即: Options + Type + LS ID + Adv Router + Sequence + Checksum(设为0) + Length + Body
+        # 构建 LSA Header (跳过 LS Age)
+        # Header 格式 (无 Age): Options(1) + Type(1) + ID(4) + AdvRouter(4) + Seq(4) + Checksum(2) + Length(2)
+        lsa_header_no_age = struct.pack("!BB4s4sIHH",
             lsa.get('options', 0x02),
             lsa_type,
             socket.inet_aton(lsa.get('id', '0.0.0.0')),
@@ -1285,8 +1288,8 @@ class OSPFRouter:
             lsa_length
         )
         
-        # 计算整个 LSA (Header + Body) 的校验和
-        lsa_checksum = calc_checksum(lsa_header + lsa_body)
+        # 计算 LSA 的校验和 (跳过 LS Age 字段)
+        lsa_checksum = calc_checksum(lsa_header_no_age + lsa_body)
         
         return lsa_checksum, lsa_length
     
