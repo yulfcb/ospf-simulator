@@ -855,9 +855,9 @@ class OSPFRouter:
             # 验证 checksum (RFC 2328)
             # 需要校验整个 OSPF 报文 (header + body)
             received_checksum = header.checksum
-            # 把 header 中的 checksum 字段置零后计算整个报文
-            temp_data = data[:12] + b'\x00\x00' + data[14:]
-            calculated_checksum = calc_checksum(temp_data)
+            # 把 header 中的 checksum 字段(第13-14字节)置零后计算整个报文
+            # OSPF header: 24 bytes = version(1) + type(1) + length(2) + router_id(4) + area_id(4) + checksum(2) + auth_type(2) + auth(8)
+            calculated_checksum = calc_checksum(data[:12] + b'\x00\x00' + data[14:])
             if received_checksum != calculated_checksum:
                 logger.warning(f"Checksum 校验失败: expected={calculated_checksum}, got={received_checksum}")
                 # 注意: OSPF 要求 checksum 校验失败则丢弃报文
