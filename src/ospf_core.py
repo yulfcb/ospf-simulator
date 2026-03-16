@@ -987,263 +987,200 @@ class OSPFRouter:
         return msg.pack(dd.pack())
     
     def _process_dd(self, data: bytes, src_addr: str, peer_router_id: str = None) -> Optional[bytes]:
-        """处理 DD 报文 (RFC 2328 Section 10.8)"""
+        """处理 DD 报文 - RFC 2328 Section 10.8"""
+        
+        # 1. 解析 DD 报文
         dd = DDPacket.unpack(data)
+        if not dd:
+            return None
         
-        i_bit = (dd.flags & 0x01) != 0  # Initial bit (bit 0)
-        m_bit = (dd.flags & 0x02) != 0  # More bit (bit 1)
-        ms_bit = (dd.flags & 0x04) != 0  # Master/Slave bit (bit 2)
+        # 2. 解析 Flags
+        # Bit 0 (0x01): MS (Master=1, Slave=0)
+        # Bit 1 (0x02): M (More=1, Last=0)
+        # Bit 2 (0x04): I (Initial=1, Subsequent=0)
+        ms_bit = (dd.flags & 0x01) != 0
+        m_bit = (dd.flags & 0x02) != 0
+        i_bit = (dd.flags & 0x04) != 0
         
-        # 使用peer_router_id作为邻居标识（更准确）
+        # 3. 确定邻居
         neighbor_id = peer_router_id if peer_router_id else src_addr
-        
-        logger.info(f"收到 DD from {neighbor_id}, I={i_bit}, M={m_bit}, MS={ms_bit}, seq={dd.dd_sequence}")
-        
-        # 确保邻居存在
         if neighbor_id not in self.neighbors:
             self.neighbors[neighbor_id] = {'state': NeighborState.INIT, 'priority': 1}
         
         current_state = self.neighbors[neighbor_id].get('state', NeighborState.INIT)
         
-        # RFC 2328: 收到DD报文，无论当前状态如何，都应该处理
-        if current_state not in (NeighborState.EXSTART, NeighborState.EXCHANGE):
-            self.neighbors[neighbor_id]['state'] = NeighborState.EXSTART
-            current_state = NeighborState.EXSTART
-            logger.info(f"状态 -> EXSTART")
+        logger.info(f"收到 DD from {neighbor_id}, I={i_bit}, M={m_bit}, MS={ms_bit}, seq={dd.dd_sequence}, state={current_state}")
         
-        # EXSTART状态: 选举Master/Slave，协商序列号
+        # 4. 状态处理
         if current_state == NeighborState.EXSTART:
-            # 首次收到DD，选举Master
-            if 'is_master' not in self.neighbors[neighbor_id]:
-                my_id = int.from_bytes(socket.inet_aton(self.router_id), 'big')
-                # 使用peer_router_id进行比较
-                peer_id = int.from_bytes(socket.inet_aton(peer_router_id or src_addr), 'big')
-                
-                if peer_id > my_id:
-                    self.neighbors[neighbor_id]['is_master'] = False  # 对方是Master
-                else:
-                    self.neighbors[neighbor_id]['is_master'] = True   # 我是Master
-                
-                # Master初始化序列号
-                if self.neighbors[neighbor_id]['is_master']:
-                    import time
-                    self.neighbors[neighbor_id]['dd_sequence'] = int(time.time()) & 0xFFFFFFFF
-                else:
-                    self.neighbors[neighbor_id]['dd_sequence'] = dd.dd_sequence
-            
-            is_master = self.neighbors[neighbor_id]['is_master']
-            
-            # 追踪这是不是我们发送的第一条DD
-            # 如果我们还没发送过DD (sent_initial_dd未设置)，则这是初始DD
-            sent_initial = self.neighbors[neighbor_id].get('sent_initial_dd', False)
-            
-            # 收到初始DD(I=1)，进入EXCHANGE
-            if i_bit:
-                self.neighbors[neighbor_id]['state'] = NeighborState.EXCHANGE
-                current_state = NeighborState.EXCHANGE
-                # 标记已收到初始DD
-                self.neighbors[neighbor_id]['received_initial_dd'] = True
-                
-                # Slave: 使用Master的序列号回复
-                if not is_master:
-                    self.neighbors[neighbor_id]['dd_sequence'] = dd.dd_sequence
-            
-            # 发送DD
-            seq = self.neighbors[neighbor_id]['dd_sequence']
-            
-            # RFC 2328: I位仅在初始DD时为1，后续DD均为0
-            # 如果我们还没有发送过初始DD，则这是我们的初始DD，I=1
-            # 一旦我们发送过初始DD，后续DD的I位为0
-            if not sent_initial:
-                # 这是我们的第一条DD，I=1
-                i_flag = 1
-                # 标记已发送初始DD
-                self.neighbors[neighbor_id]['sent_initial_dd'] = True
-            else:
-                # 后续DD，I=0
-                i_flag = 0
-            
-            flags = i_flag | 0x02 | ((1 if is_master else 0) << 2)  # I, M=1, MS
-            
-            my_dd = DDPacket(
-                interface_mtu=1500,
-                options=0x02,
-                dd_sequence=seq,
-                flags=flags
-            )
-            
-            msg = OSPFHeader(
-                type=OSPF_TYPE_DD,
-                length=24 + len(my_dd.pack()),
-                router_id=self.router_id,
-                area_id=self.area_id
-            )
-            self.stats['dd_sent'] += 1
-            logger.info(f"发送 DD, I=0, M=1, MS={1 if is_master else 0}, seq={seq}")
-            return msg.pack(my_dd.pack())
+            return self._handle_dd_exstart(neighbor_id, dd, i_bit, m_bit, ms_bit, src_addr)
+        elif current_state == NeighborState.EXCHANGE:
+            return self._handle_dd_exchange(neighbor_id, dd, i_bit, m_bit, ms_bit, src_addr)
+        else:
+            # 其他状态，重置到 ExStart
+            self.neighbors[neighbor_id]['state'] = NeighborState.EXSTART
+            return self._handle_dd_exstart(neighbor_id, dd, i_bit, m_bit, ms_bit, src_addr)
+    
+    def _handle_dd_exstart(self, neighbor_id: str, dd, i_bit: bool, m_bit: bool, ms_bit: bool, src_addr: str) -> Optional[bytes]:
+        """ExStart 状态处理 - Master/Slave 选举"""
         
-        # EXCHANGE状态: 交换DD摘要
-        if current_state == NeighborState.EXCHANGE:
-            is_master = self.neighbors[neighbor_id].get('is_master', False)
-            
-            # 检查是否DD交换完成(M=0)
-            if not m_bit:
-                # 对方发送最后DD
-                self.neighbors[neighbor_id]['peer_dd_done'] = True
-                
-                # 检查双方是否都完成DD交换
-                if (self.neighbors[neighbor_id].get('peer_dd_done') and 
-                    self.neighbors[neighbor_id].get('own_dd_done')):
-                    # 双方都完成DD交换，进入LOADING
-                    self.neighbors[neighbor_id]['state'] = NeighborState.LOADING
-                    logger.info(f"双方DD交换完成，进入 LOADING 状态")
-                    
-                    # 发送 LSR 请求缺失的 LSA
-                    lsr_response = self._send_lsr_for_missing_lsa(neighbor_id)
-                    if lsr_response:
-                        return lsr_response
-                # 即使M=0，如果本端还有更多DD要发送，仍需要回复
-                # Master/Slave都必须响应对方的DD
-                # 但如果没有更多LSA要发送，可以不回复
-                if not self.neighbors[neighbor_id].get('own_dd_done'):
-                    # 本端还有更多DD要发送，继续回复
-                    pass
-                else:
-                    return None
-            
-            # Master收到Slave的DD后，发送自己的LSA摘要
-            if is_master:
-                # Master发送LSA摘要
-                pass  # 继续发送
-            
-            # Slave 必须使用 Master 的序列号并递增
-            if not is_master:
-                # Slave: 使用 Master 的序列号 + 1
-                self.neighbors[neighbor_id]['dd_sequence'] = dd.dd_sequence + 1
+        my_id = int.from_bytes(socket.inet_aton(self.router_id), 'big')
+        peer_id = int.from_bytes(socket.inet_aton(neighbor_id), 'big')
+        
+        # 首次收到 DD (I=1)，进行选举
+        if i_bit:
+            # 选举 Master: Router ID 大的为 Master
+            if peer_id > my_id:
+                self.neighbors[neighbor_id]['is_master'] = False  # 对端是 Master
+                self.neighbors[neighbor_id]['dd_sequence'] = dd.dd_sequence
             else:
-                # Master: 递增自己的序列号
-                self.neighbors[neighbor_id]['dd_sequence'] += 1
+                self.neighbors[neighbor_id]['is_master'] = True   # 我是 Master
+                import time
+                self.neighbors[neighbor_id]['dd_sequence'] = int(time.time()) & 0xFFFFFFFF
             
+            # 状态转换到 EXCHANGE
+            self.neighbors[neighbor_id]['state'] = NeighborState.EXCHANGE
+            logger.info(f"Master/Slave 选举完成: {'我是Master' if self.neighbors[neighbor_id]['is_master'] else '对端是Master'}, 状态 -> EXCHANGE")
+            
+            # 发送响应 DD
+            is_master = self.neighbors[neighbor_id]['is_master']
             seq = self.neighbors[neighbor_id]['dd_sequence']
             
-            # I 位: 仅在首次DD交换时为1，后续DD均为0
-            # 跟踪是否已处理过初始DD
-            i_flag = 0  # 后续DD，I=0
+            # 构建 LSA 摘要
+            lsa_headers = self._build_lsa_headers()
             
-            # 检查本端是否还有更多LSA要发送
-            # 如果已经标记 own_dd_done，则没有更多LSA
-            has_more_lsa = not self.neighbors[neighbor_id].get('own_dd_done', False)
-            m_flag = 1 if has_more_lsa else 0
-            
-            # Bit 0 (0x01): I, Bit 1 (0x02): M, Bit 2 (0x04): MS
-            flags = i_flag | (m_flag << 1) | ((1 if is_master else 0) << 2)
-            
-            # 构建DD报文，包含LSA摘要(仅Header，但length为实际长度，需计算checksum)
-            lsa_headers = []
-            for lsa_key, lsa in self.lsdb.items():
-                lsa_type = lsa.get('type', 1)
-                lsa_body = b''
-                
-                # 计算实际LSA长度
-                if lsa_type == 1:  # Router LSA
-                    links = lsa.get('links', [])
-                    lsa_body = struct.pack("!H", len(links))
-                    for link in links:
-                        # RFC 2328: Type(2) + LinkID(4) + LinkData(4) + TOS(1) + Metric(2) = 13 bytes
-                        lsa_body += struct.pack("!H4s4sBH",
-                            link.get('type', 3),
-                            socket.inet_aton(link.get('link_id', '0.0.0.0')),
-                            socket.inet_aton(link.get('link_data', '0.0.0.0')),
-                            0,
-                            link.get('metric', 1)
-                        )
-                elif lsa_type == 2:  # Network LSA
-                    network_mask = socket.inet_aton(lsa.get('network_mask', '255.255.255.0'))
-                    routers = lsa.get('attached_routers', [])
-                    lsa_body = network_mask
-                    for r in routers:
-                        lsa_body += socket.inet_aton(r)
-                
-                lsa_length = 20 + len(lsa_body)
-                
-                # 构建LSA Header (仅20字节，但length字段为实际长度)
-                lsa_header_for_checksum = struct.pack("!HBB4s4sIHH",
-                    lsa.get('age', 0),
-                    lsa.get('options', 0x02),
-                    lsa_type,
-                    socket.inet_aton(lsa.get('id', '0.0.0.0')),
-                    socket.inet_aton(lsa.get('adv_router', '0.0.0.0')),
-                    lsa.get('sequence', 0x80000001),
-                    0,
-                    lsa_length
-                )
-                
-                # 计算完整LSA的checksum
-                lsa_checksum = calc_checksum(lsa_header_for_checksum + lsa_body)
-                
-                # 使用正确的字段名: ls_age, ls_type, ls_id, ls_sequence
-                lsa_headers.append({
-                    'ls_type': lsa_type,
-                    'ls_id': lsa.get('id', '0.0.0.0'),
-                    'adv_router': lsa.get('adv_router', '0.0.0.0'),
-                    'ls_sequence': lsa.get('sequence', 0x80000001),
-                    'ls_age': lsa.get('age', 0),
-                    'options': lsa.get('options', 0x02),
-                    'length': lsa_length,
-                    'checksum': lsa_checksum
-                })
-            
-            my_dd = DDPacket(
-                interface_mtu=1500,
-                options=0x02,
-                dd_sequence=seq,
-                flags=flags,
-                lsa_headers=lsa_headers
-            )
-            
-            msg = OSPFHeader(
-                type=OSPF_TYPE_DD,
-                length=24 + len(my_dd.pack()),
-                router_id=self.router_id,
-                area_id=self.area_id
-            )
-            self.stats['dd_sent'] += 1
-            
-            # 检查本端DD是否发送完毕（当没有更多LSA时，M=0）
-            # 这里简化处理：假设DD报文带LSA时M=1，不带时M=0
-            if not lsa_headers:
-                self.neighbors[neighbor_id]['own_dd_done'] = True
-            
-            logger.info(f"发送 DD (带LSA摘要), M={1 if lsa_headers else 0}, seq={seq}")
-            return msg.pack(my_dd.pack())
+            # 发送 DD: I=0, M=1, MS=is_master
+            # Flags: Bit 0=MS, Bit 1=M, Bit 2=I
+            flags = (1 if is_master else 0) | 0x02  # MS=1, M=1, I=0
+            return self._build_dd_packet(neighbor_id, seq, flags, lsa_headers)
         
         return None
     
-    def _send_lsr_for_missing_lsa(self, neighbor_id: str) -> Optional[bytes]:
+    def _handle_dd_exchange(self, neighbor_id: str, dd, i_bit: bool, m_bit: bool, ms_bit: bool, src_addr: str) -> Optional[bytes]:
+        """Exchange 状态处理 - DD 交换"""
+        
+        is_master = self.neighbors[neighbor_id].get('is_master', False)
+        
+        # 更新序列号
+        if is_master:
+            # Master: 递增自己的序列号
+            self.neighbors[neighbor_id]['dd_sequence'] += 1
+        else:
+            # Slave: 使用 Master 的序列号 + 1
+            self.neighbors[neighbor_id]['dd_sequence'] = dd.dd_sequence + 1
+        
+        seq = self.neighbors[neighbor_id]['dd_sequence']
+        
+        # 检查 M 位 - 对端 DD 发送完成
+        if not m_bit:
+            self.neighbors[neighbor_id]['peer_dd_done'] = True
+            logger.info(f"对端 DD 发送完成 (M=0)")
+        
+        # 构建响应 DD
+        lsa_headers = self._build_lsa_headers()
+        
+        # Flags: I=0, M=1(如果还有更多), MS=is_master
+        is_master_flag = 1 if is_master else 0
+        m_flag = 1 if lsa_headers else 0  # M=1 如果还有 LSA 要发送
+        flags = is_master_flag | (m_flag << 1)  # Bit 0=MS, Bit 1=M
+        
+        # 检查是否完成 DD 交换
+        if self.neighbors[neighbor_id].get('peer_dd_done') and not lsa_headers:
+            self.neighbors[neighbor_id]['own_dd_done'] = True
+            self.neighbors[neighbor_id]['state'] = NeighborState.LOADING
+            logger.info(f"DD 交换完成，进入 LOADING 状态")
+            # 发送 LSR 请求缺失的 LSA
+            return self._send_lsr(neighbor_id)
+        
+        # 如果没有更多 LSA 且对端已完成，标记 own_dd_done
+        if not lsa_headers and self.neighbors[neighbor_id].get('peer_dd_done'):
+            self.neighbors[neighbor_id]['own_dd_done'] = True
+            self.neighbors[neighbor_id]['state'] = NeighborState.LOADING
+            logger.info(f"本端 DD 发送完成，进入 LOADING 状态")
+            return self._send_lsr(neighbor_id)
+        
+        return self._build_dd_packet(neighbor_id, seq, flags, lsa_headers)
+    
+    def _build_lsa_headers(self) -> list:
+        """构建 LSA 头部列表"""
+        headers = []
+        for lsa_key, lsa in self.lsdb.items():
+            lsa_type = lsa.get('type', 1)
+            lsa_body = b''
+            
+            # 计算实际 LSA 长度
+            if lsa_type == 1:  # Router LSA
+                links = lsa.get('links', [])
+                lsa_body = struct.pack("!H", len(links))
+                for link in links:
+                    lsa_body += struct.pack("!H4s4sBH",
+                        link.get('type', 3),
+                        socket.inet_aton(link.get('link_id', '0.0.0.0')),
+                        socket.inet_aton(link.get('link_data', '0.0.0.0')),
+                        0,
+                        link.get('metric', 1)
+                    )
+            elif lsa_type == 2:  # Network LSA
+                network_mask = socket.inet_aton(lsa.get('network_mask', '255.255.255.0'))
+                routers = lsa.get('attached_routers', [])
+                lsa_body = network_mask
+                for r in routers:
+                    lsa_body += socket.inet_aton(r)
+            
+            lsa_length = 20 + len(lsa_body)
+            
+            # 构建 LSA Header 用于 checksum 计算
+            lsa_header_for_checksum = struct.pack("!HBB4s4sIHH",
+                lsa.get('age', 0),
+                lsa.get('options', 0x02),
+                lsa_type,
+                socket.inet_aton(lsa.get('id', '0.0.0.0')),
+                socket.inet_aton(lsa.get('adv_router', '0.0.0.0')),
+                lsa.get('sequence', 0x80000001),
+                0,
+                lsa_length
+            )
+            
+            # 计算完整 LSA 的 checksum
+            lsa_checksum = calc_checksum(lsa_header_for_checksum + lsa_body)
+            
+            headers.append({
+                'ls_age': lsa.get('age', 0),
+                'ls_type': lsa.get('type', 1),
+                'ls_id': lsa.get('id', '0.0.0.0'),
+                'adv_router': lsa.get('adv_router', self.router_id),
+                'ls_sequence': lsa.get('sequence', 0x80000001),
+                'checksum': lsa_checksum,
+                'length': lsa_length
+            })
+        return headers
+    
+    def _build_dd_packet(self, neighbor_id: str, seq: int, flags: int, lsa_headers: list) -> bytes:
+        """构建并发送 DD 报文"""
+        my_dd = DDPacket(
+            interface_mtu=1500,
+            options=0x02,
+            dd_sequence=seq,
+            flags=flags,
+            lsa_headers=lsa_headers
+        )
+        
+        msg = OSPFHeader(
+            type=OSPF_TYPE_DD,
+            length=24 + len(my_dd.pack()),
+            router_id=self.router_id,
+            area_id=self.area_id
+        )
+        
+        self.stats['dd_sent'] += 1
+        logger.info(f"发送 DD, flags=0x{flags:02x}, seq={seq}, lsa_count={len(lsa_headers)}")
+        return msg.pack(my_dd.pack())
+    
+    def _send_lsr(self, neighbor_id: str) -> Optional[bytes]:
         """发送 LSR 请求缺失的 LSA"""
         # 检查邻居的 LSDB 摘要，找出本地没有的 LSA
-        missing_lsas = []
-        
-        # 简化的 LSR 逻辑：向邻居请求其拥有但我们没有的 LSA
-        # 这里可以根据实际需求扩展
-        
-        if missing_lsas:
-            for lsa_key in missing_lsas:
-                lsa_type, lsa_id = lsa_key.split('-', 1)
-                lsr = LSRPacket(
-                    ls_type=int(lsa_type),
-                    ls_id=lsa_id,
-                    adv_router=self.neighbors[neighbor_id].get('adv_router', '0.0.0.0')
-                )
-                msg = OSPFHeader(
-                    type=OSPF_TYPE_LSR,
-                    length=24 + len(lsr.pack()),
-                    router_id=self.router_id,
-                    area_id=self.area_id
-                )
-                self.stats['lsr_sent'] += 1
-                return msg.pack(lsr.pack())
-        
+        # 这里简化为返回 None，实际应请求缺失的 LSA
+        logger.info(f"进入 LOADING 状态，准备发送 LSR 请求")
         return None
     
     def _process_lsr(self, data: bytes, src_addr: str, peer_router_id: str = None) -> Optional[bytes]:
