@@ -427,12 +427,12 @@ class LSUPacket:
                 # # links (2 bytes)
                 lsa_body = struct.pack("!H", len(links))
                 for link in links:
-                    # RFC 2328: Type(2) + LinkID(4) + LinkData(4) + TOS(1) + Metric(2) = 13 bytes
+                    # RFC 2328: Type(1) + LinkID(4) + LinkData(4) + TOS(1) + Metric(2) = 12 bytes
                     link_id = socket.inet_aton(link.get('link_id', '0.0.0.0'))
                     link_data = socket.inet_aton(link.get('link_data', '0.0.0.0'))
                     link_type = link.get('type', 3)
                     metric = link.get('metric', 1)
-                    lsa_body += struct.pack("!H4s4sBH", link_type, link_id, link_data, 0, metric)
+                    lsa_body += struct.pack("!B4s4sBH", link_type, link_id, link_data, 0, metric)
                 
                 lsa_length = 20 + len(lsa_body)  # Header + body
             elif lsa_type == 2:  # Network LSA
@@ -443,7 +443,39 @@ class LSUPacket:
                 for r in routers:
                     lsa_body += socket.inet_aton(r)
                 lsa_length = 20 + len(lsa_body)
+            elif lsa_type == 3:  # Summary LSA (Network Summary)
+                # RFC 2328: Network Mask (4) + metric (4) = 8 bytes
+                network_mask = socket.inet_aton(entry.get('network_mask', '255.255.255.0'))
+                metric = struct.pack('!I', entry.get('metric', 1))
+                lsa_body = network_mask + metric
+                lsa_length = 20 + len(lsa_body)
+            elif lsa_type == 4:  # ASBR Summary LSA
+                # RFC 2328: Network Mask (4) + metric (4) = 8 bytes
+                network_mask = socket.inet_aton(entry.get('network_mask', '255.255.255.0'))
+                metric = struct.pack('!I', entry.get('metric', 1))
+                lsa_body = network_mask + metric
+                lsa_length = 20 + len(lsa_body)
+            elif lsa_type == 5:  # AS External LSA
+                # RFC 2328: Network Mask (4) + E-bit (1) + metric (4) + Forwarding (4) + Tag (4) = 17 bytes
+                network_mask = socket.inet_aton(entry.get('network_mask', '255.255.255.0'))
+                e_bit = entry.get('e_bit', 0)
+                metric = struct.pack('!I', entry.get('metric', 1))
+                forwarding = socket.inet_aton(entry.get('forwarding_address', '0.0.0.0'))
+                external_tag = struct.pack('!I', entry.get('external_route_tag', 0))
+                # E-bit 在第一个字节的高位
+                lsa_body = network_mask + bytes([e_bit << 7]) + metric + forwarding + external_tag
+                lsa_length = 20 + len(lsa_body)
+            elif lsa_type == 7:  # NSSA External LSA
+                # 类似 Type 5
+                network_mask = socket.inet_aton(entry.get('network_mask', '255.255.255.0'))
+                p_bit = entry.get('p_bit', 0)
+                metric = struct.pack('!I', entry.get('metric', 1))
+                forwarding = socket.inet_aton(entry.get('forwarding_address', '0.0.0.0'))
+                external_tag = struct.pack('!I', entry.get('external_route_tag', 0))
+                lsa_body = network_mask + bytes([p_bit << 7]) + metric + forwarding + external_tag
+                lsa_length = 20 + len(lsa_body)
             else:
+                lsa_body = b''
                 lsa_length = 20
             
             # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
@@ -517,16 +549,16 @@ class LSUPacket:
                 links = []
                 link_offset = 2
                 for i in range(num_links):
-                    if link_offset + 13 <= len(body):
-                        # RFC 2328: Type(2) + LinkID(4) + LinkData(4) + TOS(1) + Metric(2) = 13 bytes
-                        link = struct.unpack("!H4s4sBH", body[link_offset:link_offset+13])
+                    if link_offset + 12 <= len(body):
+                        # RFC 2328: Type(1) + LinkID(4) + LinkData(4) + TOS(1) + Metric(2) = 12 bytes
+                        link = struct.unpack("!B4s4sBH", body[link_offset:link_offset+12])
                         links.append({
                             'type': link[0],
                             'link_id': socket.inet_ntoa(link[1]),
                             'link_data': socket.inet_ntoa(link[2]),
                             'metric': link[4]
                         })
-                        link_offset += 13
+                        link_offset += 12
                 entry_data['links'] = links
                 
             elif lsa_type == 2 and len(body) >= 4:  # Network LSA
@@ -1210,7 +1242,7 @@ class OSPFRouter:
                 link_type = link.get('type', 3)
                 metric = link.get('metric', 1)
                 # TOS=0 (1 byte)
-                lsa_body += struct.pack("!H4s4sBH", link_type, link_id, link_data, 0, metric)
+                lsa_body += struct.pack("!B4s4sBH", link_type, link_id, link_data, 0, metric)
         
         elif lsa_type == 2:  # Network LSA
             network_mask = socket.inet_aton(lsa.get('network_mask', '255.255.255.0'))
