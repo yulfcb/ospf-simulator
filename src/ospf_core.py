@@ -1014,16 +1014,61 @@ class OSPFRouter:
             self.neighbors[neighbor_id] = {'state': NeighborState.INIT, 'priority': 1}
 
     def _handle_dd_exstart(self, neighbor_id: str, dd: DDPacket, src_addr: str) -> Optional[bytes]:
-        """处理 ExStart 状态的 DD 报文"""
+        """处理 ExStart 状态的 DD 报文 - RFC 2328 Section 10.8"""
         i_bit = self._parse_i_bit(dd.flags)
+        m_bit = self._parse_m_bit(dd.flags)
         
-        if not i_bit:
-            return None
+        # 获取对端的 Router ID
+        peer_router_id = dd.lsa_headers[0]['adv_router'] if dd.lsa_headers else neighbor_id
         
-        self._elect_master_slave(neighbor_id, dd)
-        self._transition_to_exchange(neighbor_id)
-        
-        return self._send_dd_response(neighbor_id)
+        if i_bit:
+            # 收到 I=1 的 DD 报文 (初始 DD)
+            # RFC 2328: 双方都认为自己是 Master，首先发送 I=1 的 DD
+            # 需要比较 Router ID 来决定角色
+            
+            my_id_int = self._get_router_id_int()
+            peer_id_int = self._get_router_id_int(peer_router_id)
+            
+            if my_id_int > peer_id_int:
+                # 本端 Router ID 更大: 本端应该是 Master
+                # 对端先发起了协商，本端需要重新发送 I=1 的初始化 DD (本端先发起)
+                logger.info(f"本端 Router ID ({self.router_id}) > 对端 ({peer_router_id}), 重新发送 I=1 初始化 DD")
+                
+                # 选举 Master: 本端是 Master
+                self.neighbors[neighbor_id]['is_master'] = True
+                self.neighbors[neighbor_id]['dd_sequence'] = self._generate_dd_sequence()
+                
+                # 发送 I=1 的初始化 DD (本端先发起, MS=1)
+                return self._send_initial_dd(neighbor_id)
+            else:
+                # 本端 Router ID 更小: 对端是 Master
+                # 进入 exchange 状态，发送本端的 LSA 摘要
+                logger.info(f"本端 Router ID ({self.router_id}) < 对端 ({peer_router_id}), 对端是 Master")
+                
+                # 选举 Master: 本端是 Slave
+                self.neighbors[neighbor_id]['is_master'] = False
+                self.neighbors[neighbor_id]['dd_sequence'] = dd.dd_sequence
+                
+                # 进入 exchange 状态
+                self._transition_to_exchange(neighbor_id)
+                
+                # 发送本端的 LSA 摘要 (I=0, M=1, MS=0)
+                return self._send_dd_with_lsa(neighbor_id)
+        else:
+            # 收到 I=0 的 DD 报文
+            # 对端已经完成初始协商，携带了 LSA 摘要
+            # 本端也进入 exchange 状态，发送本端的 LSA 摘要信息
+            
+            logger.info(f"收到对端 I=0 的 DD, 进入 exchange 状态")
+            
+            # 先完成 Master/Slave 选举
+            self._elect_master_slave(neighbor_id, dd)
+            
+            # 进入 exchange 状态
+            self._transition_to_exchange(neighbor_id)
+            
+            # 发送本端的 LSA 摘要
+            return self._send_dd_with_lsa(neighbor_id)
 
     def _parse_i_bit(self, flags: int) -> bool:
         """解析 I 位"""
@@ -1110,19 +1155,124 @@ class OSPFRouter:
         
         flags = (1 if is_master else 0) | 0x02
         return self._build_dd_packet(neighbor_id, seq, flags, lsa_headers)
+
+    def _send_initial_dd(self, neighbor_id: str) -> Optional[bytes]:
+        """发送初始 DD 报文 (I=1, M=1, MS=1) - 用于 ExStart 状态"""
+        is_master = self.neighbors[neighbor_id].get('is_master', True)
+        seq = self.neighbors[neighbor_id]['dd_sequence']
+        
+        # 初始 DD 不包含 LSA 摘要 (空列表)
+        # 标志位: I=1, M=1, MS=1 (本端认为自己是 Master)
+        flags = 0x07  # I=1, M=1, MS=1
+        
+        logger.debug(f"发送初始 DD: I=1, M=1, MS={'1' if is_master else '0'}, seq={seq}")
+        return self._build_dd_packet(neighbor_id, seq, flags, [])
+    
+    def _send_dd_with_lsa(self, neighbor_id: str) -> Optional[bytes]:
+        """发送带 LSA 摘要的 DD 报文 (I=0, M=1/0, MS=0/1) - 用于 Exchange 状态"""
+        is_master = self.neighbors[neighbor_id].get('is_master', False)
+        seq = self.neighbors[neighbor_id]['dd_sequence']
+        lsa_headers = self._build_lsa_headers()
+        
+        # 计算 M 位: 如果还有更多 LSA 要发送则 M=1
+        # 简化处理: 如果 LSDB 有内容则 M=1
+        m_bit = 1 if lsa_headers else 0
+        
+        # 标志位: I=0, M=1/0, MS=1/0
+        flags = (m_bit << 1) | (1 if is_master else 0)  # I=0
+        
+        logger.debug(f"发送 DD (带 LSA 摘要): I=0, M={m_bit}, MS={'1' if is_master else '0'}, seq={seq}, lsa_count={len(lsa_headers)}")
+        return self._build_dd_packet(neighbor_id, seq, flags, lsa_headers)
+
+    def _calculate_lsa_checksum_and_length(self, lsa: dict) -> Tuple[int, int]:
+        """计算 LSA 的真实 checksum 和 length
+        
+        Returns:
+            (checksum, length): LSA 校验和和长度
+        """
+        lsa_type = lsa.get('type', 1)
+        
+        # 构建 LSA 主体 (Header 之外的部分)
+        lsa_body = b''
+        
+        if lsa_type == 1:  # Router LSA
+            links = lsa.get('links', [])
+            # links count (2 bytes)
+            lsa_body = struct.pack("!H", len(links))
+            for link in links:
+                link_id = socket.inet_aton(link.get('link_id', '0.0.0.0'))
+                # link_data 可以是 IP 地址或接口索引
+                link_data_val = link.get('link_data')
+                if isinstance(link_data_val, str):
+                    link_data = socket.inet_aton(link_data_val)
+                else:
+                    link_data = struct.pack("!I", link_data_val if link_data_val else 0)
+                link_type = link.get('type', 3)
+                metric = link.get('metric', 1)
+                # TOS=0 (1 byte)
+                lsa_body += struct.pack("!H4s4sBH", link_type, link_id, link_data, 0, metric)
+        
+        elif lsa_type == 2:  # Network LSA
+            network_mask = socket.inet_aton(lsa.get('network_mask', '255.255.255.0'))
+            lsa_body = network_mask
+            attached_routers = lsa.get('attached_routers', [])
+            for router_id in attached_routers:
+                lsa_body += socket.inet_aton(router_id)
+        
+        elif lsa_type == 3:  # Summary LSA (Network Summary)
+            network_mask = socket.inet_aton(lsa.get('network_mask', '255.255.255.0'))
+            metric = struct.pack("!I", lsa.get('metric', 1))
+            lsa_body = network_mask + metric
+        
+        elif lsa_type == 4:  # ASBR Summary LSA
+            network_mask = socket.inet_aton(lsa.get('network_mask', '255.255.255.0'))
+            metric = struct.pack("!I", lsa.get('metric', 1))
+            lsa_body = network_mask + metric
+        
+        elif lsa_type == 5:  # AS External LSA
+            network_mask = socket.inet_aton(lsa.get('network_mask', '255.255.255.0'))
+            e_bit = lsa.get('e_bit', 0)
+            metric = struct.pack("!I", lsa.get('metric', 1))
+            forwarding = socket.inet_aton(lsa.get('forwarding_address', '0.0.0.0'))
+            external_tag = struct.pack("!I", lsa.get('external_route_tag', 0))
+            # E-bit 在第一个字节的高位
+            lsa_body = network_mask + bytes([e_bit << 7]) + metric + forwarding + external_tag
+        
+        # LSA 总长度 = Header(20) + Body
+        lsa_length = 20 + len(lsa_body)
+        
+        # 构建 LSA Header (用于计算 checksum)
+        lsa_header = struct.pack("!HBB4s4sIHH",
+            lsa.get('age', 0),
+            lsa.get('options', 0x02),
+            lsa_type,
+            socket.inet_aton(lsa.get('id', '0.0.0.0')),
+            socket.inet_aton(lsa.get('adv_router', self.router_id)),
+            lsa.get('sequence', 0x80000001),
+            0,  # checksum 初始为 0
+            lsa_length
+        )
+        
+        # 计算整个 LSA (Header + Body) 的校验和
+        lsa_checksum = calc_checksum(lsa_header + lsa_body)
+        
+        return lsa_checksum, lsa_length
     
     def _build_lsa_headers(self) -> list:
-        """构建 LSA 头部列表"""
+        """构建 LSA 头部列表 (带真实的 checksum 和 length)"""
         headers = []
         for lsa_key, lsa in self.lsdb.items():
+            # 计算真实的 checksum 和 length
+            checksum, length = self._calculate_lsa_checksum_and_length(lsa)
+            
             headers.append({
                 'ls_age': lsa.get('age', 0),
                 'ls_type': lsa.get('type', 1),
                 'ls_id': lsa.get('id', '0.0.0.0'),
                 'adv_router': lsa.get('adv_router', self.router_id),
                 'ls_sequence': lsa.get('sequence', 0x80000001),
-                'checksum': lsa.get('checksum', 0),
-                'length': lsa.get('length', 20)
+                'checksum': checksum,
+                'length': length
             })
         return headers
 
