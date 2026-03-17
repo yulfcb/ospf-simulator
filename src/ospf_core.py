@@ -25,10 +25,10 @@ except ImportError:
     HAS_NETIFACES = False
 
 
-# RFC 1071 checksum calculation (used by OSPF)
+# RFC 1071 checksum calculation (used for OSPF packet header, NOT for LSA)
 # Returns 16-bit one's complement of one's complement sum
 def calc_checksum(data: bytes) -> int:
-    """Calculate RFC 1071 checksum for OSPF packets"""
+    """Calculate RFC 1071 checksum for OSPF packet headers (not LSA)"""
     if len(data) % 2 == 1:
         data += b'\x00'  # Pad to even length
     
@@ -43,6 +43,68 @@ def calc_checksum(data: bytes) -> int:
     
     # One's complement
     return (~checksum) & 0xFFFF
+
+
+def fletcher_checksum(data: bytes, offset: int = 0) -> int:
+    """
+    Calculate Fletcher-16 checksum (RFC 2328 Appendix B)
+    
+    This is used for LSA checksum calculation, not for OSPF packet headers.
+    
+    Args:
+        data: The data to checksum (LSA Header + LSA Body, with LS Age = 0)
+        offset: Starting offset (not used in standard Fletcher-16)
+    
+    Returns:
+        16-bit Fletcher-16 checksum
+    """
+    if len(data) == 0:
+        return 0
+    
+    # Split data into 16-bit words
+    words = []
+    for i in range(0, len(data), 2):
+        if i + 1 < len(data):
+            word = (data[i] << 8) + data[i + 1]
+        else:
+            word = data[i] << 8  # Pad with zero
+        words.append(word)
+    
+    # Calculate Fletcher sums
+    c0 = 0  # Lower sum
+    c1 = 0  # Upper sum
+    
+    for word in words:
+        c0 = (c0 + word) & 0xFF
+        c1 = (c1 + c0) & 0xFF
+    
+    # Combine c0 and c1 into final checksum
+    # The checksum field is stored in network byte order (big-endian)
+    return ((c1 << 8) | c0) & 0xFFFF
+
+
+def calc_lsa_checksum(lsa_header: bytes, lsa_body: bytes) -> int:
+    """
+    Calculate LSA checksum according to RFC 2328 Appendix B.
+    
+    The checksum covers the LSA Header and LSA Body, with the LS Age field
+    in the header treated as zero during calculation.
+    
+    Args:
+        lsa_header: 20-byte LSA header
+        lsa_body: LSA body (excluding header)
+    
+    Returns:
+        16-bit Fletcher-16 checksum
+    """
+    # Create a copy of the header with LS Age set to 0
+    # LSA Header format: LS Age (2) + Options (1) + Type (1) + LS ID (4) + 
+    #                    Adv Router (4) + Sequence (4) + Checksum (2) + Length (2)
+    # LS Age is at offset 0-1
+    header_with_zero_age = b'\x00\x00' + lsa_header[2:]
+    
+    # Calculate Fletcher checksum over (header with age=0) + body
+    return fletcher_checksum(header_with_zero_age + lsa_body)
 
 
 def get_system_interfaces() -> Dict[str, dict]:
@@ -478,20 +540,21 @@ class LSUPacket:
                 lsa_body = b''
                 lsa_length = 20
             
-            # RFC 2328 Section 8.1: Checksum 覆盖范围从 LS Age 后（跳过 2 字节的 Age）到 LSA 结束
-            # 即: Options + Type + LS ID + Adv Router + Sequence + Checksum(设为0) + Length + Body
-            # 构建 LSA Header (跳过 LS Age)
-            lsa_header_no_age = struct.pack("!BB4s4sIHH",
+            # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
+            # First, build header with checksum=0 for Fletcher checksum calculation
+            # Note: LS Age field will be treated as 0 in calc_lsa_checksum
+            lsa_header_for_calc = struct.pack("!HBB4s4sIHH",
+                entry.get('age', 0),
                 entry.get('options', 0x02),
                 lsa_type,
                 socket.inet_aton(entry.get('id', '0.0.0.0')),
                 socket.inet_aton(entry.get('adv_router', '0.0.0.0')),
                 entry.get('sequence', 0x80000001),
-                0,  # checksum 初始为 0
+                0,  # checksum initial 0 (will be replaced)
                 lsa_length
             )
-            # 计算 LSA 的校验和 (跳过 LS Age 字段)
-            lsa_checksum = calc_checksum(lsa_header_no_age + lsa_body)
+            # Calculate Fletcher-16 checksum (RFC 2328 Appendix B)
+            lsa_checksum = calc_lsa_checksum(lsa_header_for_calc, lsa_body)
             
             # LSA Header: age(2) + options(1) + type(1) + id(4) + adv_router(4) + seq(4) + checksum(2) + length(2)
             lsa_header = struct.pack("!HBB4s4sIHH",
