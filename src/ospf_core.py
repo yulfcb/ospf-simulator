@@ -916,6 +916,71 @@ class OSPFRouter:
         
         logger.info(f"注入 AS External LSA (Type 5): {network_addr}/{netmask} -> {next_hop}")
     
+    def add_summary_route(self, network: str, netmask: str, metric: int = 1, adv_router: str = None):
+        """注入 Summary LSA (Type 3) - 由ABR生成，用于通告区域间路由
+        
+        Args:
+            network: 目标网络地址
+            netmask: 网络掩码
+            metric: 到达目标的代价
+            adv_router: 通告路由器ID (默认为本路由器)
+        """
+        # 计算网络号
+        ip_int = struct.unpack("!I", socket.inet_aton(network))[0]
+        mask_int = struct.unpack("!I", socket.inet_aton(netmask))[0]
+        net_int = ip_int & mask_int
+        network_addr = socket.inet_ntoa(struct.pack("!I", net_int))
+        
+        lsa_key = f"3-{network_addr}"
+        advertiser = adv_router if adv_router else self.router_id
+        
+        # 生成或更新 Type 3 LSA (Summary LSA)
+        if lsa_key in self.lsdb:
+            self.lsdb[lsa_key]['sequence'] += 1
+        else:
+            self.lsdb[lsa_key] = {
+                'type': 3,            # LSA类型: 3 = Summary LSA (Network Summary)
+                'id': network_addr,   # LS ID: 目标网络地址
+                'adv_router': advertiser,
+                'sequence': 0x80000001,
+                'checksum': 0,
+                'age': 0,
+                'options': 0x02,
+                'network_mask': netmask,
+                'metric': metric
+            }
+        
+        logger.info(f"注入 Summary LSA (Type 3): {network_addr}/{netmask} metric={metric}")
+    
+    def add_asbr_summary(self, asbr_router_id: str, metric: int = 1, adv_router: str = None):
+        """注入 ASBR Summary LSA (Type 4) - 由ABR生成，用于通告ASBR的位置
+        
+        Args:
+            asbr_router_id: ASBR的router ID
+            metric: 到达ASBR的代价
+            adv_router: 通告路由器ID (默认为本路由器)
+        """
+        lsa_key = f"4-{asbr_router_id}"
+        advertiser = adv_router if adv_router else self.router_id
+        
+        # 生成或更新 Type 4 LSA (ASBR Summary LSA)
+        if lsa_key in self.lsdb:
+            self.lsdb[lsa_key]['sequence'] += 1
+        else:
+            self.lsdb[lsa_key] = {
+                'type': 4,            # LSA类型: 4 = ASBR Summary LSA
+                'id': asbr_router_id, # LS ID: ASBR的Router ID
+                'adv_router': advertiser,
+                'sequence': 0x80000001,
+                'checksum': 0,
+                'age': 0,
+                'options': 0x02,
+                'network_mask': '0.0.0.0',  # Type 4不使用network mask
+                'metric': metric
+            }
+        
+        logger.info(f"注入 ASBR Summary LSA (Type 4): ASBR={asbr_router_id} metric={metric}")
+    
     def generate_routes(self, base_network: str, count: int, prefix: int = 24):
         """批量生成静态路由"""
         base_ip = list(map(int, base_network.split('.')))
