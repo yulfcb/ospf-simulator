@@ -877,17 +877,44 @@ class OSPFRouter:
         logger.info(f"添加静态路由: {network}/{netmask} -> {next_hop}")
     
     def _inject_route_to_lsa(self, network: str, netmask: str, next_hop: str):
-        """将路由注入 LSA"""
-        # 更新 Router LSA
-        lsa_key = f"1-{self.router_id}"
+        """将静态路由注入 AS External LSA (Type 5)"""
+        # AS External LSA (Type 5) 用于外部路由（静态路由等）
+        # LSA Key: type 5 + network address
+        lsa_key = f"5-{network}"
+        
+        # 计算网络号
+        ip_int = struct.unpack("!I", socket.inet_aton(network))[0]
+        mask_int = struct.unpack("!I", socket.inet_aton(netmask))[0]
+        net_int = ip_int & mask_int
+        network_addr = socket.inet_ntoa(struct.pack("!I", net_int))
+        
+        # 生成或更新 Type 5 LSA (AS External LSA)
+        # 注意: 字段名必须与 pack_lsa_body 中期望的一致
         if lsa_key in self.lsdb:
             self.lsdb[lsa_key]['sequence'] += 1
-            self.lsdb[lsa_key]['links'].append({
-                'link_id': network,
-                'link_data': next_hop if next_hop != "0.0.0.0" else "0.0.0.1",
-                'type': 3,  # stub network
-                'metric': 1
-            })
+        else:
+            self.lsdb[lsa_key] = {
+                'type': 5,           # LSA类型: 5 = AS External LSA (ASE)
+                'id': network_addr,  # LS ID: 对于Type 5是网络地址
+                'adv_router': self.router_id,
+                'sequence': 0x80000001,
+                'checksum': 0,
+                'age': 0,
+                'options': 0x02,     # OSPF Options: DC=1 支持Demand Circuits
+                'network': network_addr,
+                'netmask': netmask,
+                'metric': 1,         # 静态路由默认 metric
+                'e_bit': 1,          # E-bit=1 表示外部 metric 类型为 Type 2
+                'forwarding': next_hop if next_hop != "0.0.0.0" else "0.0.0.0",
+                'external_route_tag': 0
+            }
+        
+        # 更新 LSA body 字段 (与 pack_lsa_body 中的字段名保持一致)
+        self.lsdb[lsa_key]['network_mask'] = netmask
+        self.lsdb[lsa_key]['forwarding_address'] = next_hop if next_hop != "0.0.0.0" else "0.0.0.0"
+        self.lsdb[lsa_key]['e_bit'] = 1  # 确保 E-bit 设置正确
+        
+        logger.info(f"注入 AS External LSA (Type 5): {network_addr}/{netmask} -> {next_hop}")
     
     def generate_routes(self, base_network: str, count: int, prefix: int = 24):
         """批量生成静态路由"""
