@@ -982,15 +982,122 @@ class OSPFRouter:
         logger.info(f"注入 ASBR Summary LSA (Type 4): ASBR={asbr_router_id} metric={metric}")
     
     def generate_routes(self, base_network: str, count: int, prefix: int = 24):
-        """批量生成静态路由"""
+        """批量生成静态路由
+        
+        Args:
+            base_network: 基础网络地址 (如 "10.0.0.0")
+            count: 生成路由数量
+            prefix: CIDR 前缀长度 (默认 24)
+            
+        Returns:
+            生成的路由列表
+        """
         base_ip = list(map(int, base_network.split('.')))
         generated = []
+        
+        # 计算每个网段的大小
+        # 对于 /24 掩码，网段大小是 256 (256 个地址)
+        # 为了生成不同网段，需要将 base_network 的第三位 (或第二位) 进行变化
+        subnet_size = 256  # /24 网段大小
+        subnet_mask = 256 - subnet_size  # 0
+        
         for i in range(count):
-            network = f"{base_ip[0]}.{base_ip[1]}.{(base_ip[2] + i // 256) % 256}.{i % 256}"
+            # 在第三位增加 (i * subnet_size) 来生成不同网段
+            # 这样 10.0.0.0/24, 10.0.1.0/24, 10.0.2.0/24, ...
+            network = f"{base_ip[0]}.{base_ip[1]}.{base_ip[2] + i}.{0}"
             netmask = f"255.255.255.0"
             self.add_static_route(network, netmask)
             generated.append(f"{network}/24")
+        
         return generated
+    
+    def remove_static_route(self, network: str, netmask: str = "255.255.255.0"):
+        """删除静态路由
+        
+        Args:
+            network: 目标网络地址
+            netmask: 网络掩码 (默认 255.255.255.0)
+        
+        通过发送 MaxAge LSA (LS Age = 3600) 来撤销路由。
+        MaxAge LSA 会被邻居超时并从 LSDB 中清除。
+        """
+        route_key = f"{network}-{netmask}"
+        
+        # 从路由表删除
+        if route_key in self.routes:
+            del self.routes[route_key]
+            logger.info(f"删除静态路由: {network}/{netmask}")
+        else:
+            logger.warning(f"路由不存在: {network}/{netmask}")
+        
+        # 从 LSDB 删除对应的 Type 5 LSA (AS External LSA)
+        # 计算网络地址
+        ip_int = struct.unpack("!I", socket.inet_aton(network))[0]
+        mask_int = struct.unpack("!I", socket.inet_aton(netmask))[0]
+        net_int = ip_int & mask_int
+        network_addr = socket.inet_ntoa(struct.pack("!I", net_int))
+        
+        lsa_key = f"5-{network_addr}"
+        
+        if lsa_key in self.lsdb:
+            # 发送 MaxAge LSA 来撤销路由
+            # MaxAge LSA: LS Age = 3600 (1 hour), 触发邻居超时
+            self._flood_maxage_lsa(lsa_key, network_addr, netmask)
+            # 从 LSDB 中删除
+            del self.lsdb[lsa_key]
+            logger.info(f"撤销 AS External LSA: {network_addr}/{netmask}")
+        else:
+            logger.warning(f"LSA 不存在: {lsa_key}")
+    
+    def _flood_maxage_lsa(self, lsa_key: str, network_addr: str, netmask: str):
+        """泛洪 MaxAge LSA (撤销路由)
+        
+        发送 LS Age = 3600 的 LSA，邻居收到后会将其标记为 MaxAge 并在 MaxAgeDelay 后删除。
+        
+        Args:
+            lsa_key: LSA 键名
+            network_addr: 网络地址
+            netmask: 网络掩码
+        """
+        # 构建 MaxAge LSA (Type 5 AS External LSA)
+        # LS Age = 3600 (MaxAge)
+        # Sequence = 0x7FFFFFFF (最大序列号)
+        maxage_lsa = {
+            'type': 5,           # AS External LSA
+            'id': network_addr,   # LS ID = 网络地址
+            'adv_router': self.router_id,
+            'sequence': 0x7FFFFFFF,  # 最大序列号
+            'checksum': 0,
+            'age': 3600,         # MaxAge = 3600 秒
+            'options': 0x02,
+            'network_mask': netmask,
+            'metric': 0xFFFFFF,  # 无效的 metric，表示不可达
+            'e_bit': 1,
+            'forwarding_address': '0.0.0.0',
+            'external_route_tag': 0
+        }
+        
+        # 构建 LSU 报文泛洪
+        lsu = LSUPacket(
+            age=3600,  # MaxAge
+            type=5,
+            id=network_addr,
+            adv_router=self.router_id,
+            sequence=0x7FFFFFFF,
+            lsa_entries=[maxage_lsa]
+        )
+        
+        msg = OSPFHeader(
+            type=OSPF_TYPE_LSU,
+            length=24 + len(lsu.pack()),
+            router_id=self.router_id,
+            area_id=self.area_id
+        )
+        
+        packet = msg.pack(lsu.pack())
+        logger.info(f"泛洪 MaxAge LSA: {network_addr}/{netmask}")
+        
+        return packet
     
     def send_hello(self, sock: socket.socket, target: str = ALL_SPF_ROUTERS, options: int = None):
         """发送 Hello 报文

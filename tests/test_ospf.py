@@ -84,6 +84,40 @@ class TestOSPFRouter(unittest.TestCase):
         self.assertEqual(len(routes), 5)
         self.assertGreater(len(self.router.routes), 0)
     
+    def test_generate_routes_different_networks(self):
+        """测试批量生成路由生成不同网段"""
+        routes = self.router.generate_routes("10.0.0.0", 5)
+        
+        # 验证生成的路由是不同网段
+        # 应该是: 10.0.0.0/24, 10.0.1.0/24, 10.0.2.0/24, 10.0.3.0/24, 10.0.4.0/24
+        network_parts = [r.split('/')[0] for r in routes]
+        expected_networks = ["10.0.0.0", "10.0.1.0", "10.0.2.0", "10.0.3.0", "10.0.4.0"]
+        
+        for expected in expected_networks:
+            self.assertIn(expected, network_parts, f"Expected network {expected} not found")
+        
+        # 验证所有网络都是唯一的
+        self.assertEqual(len(set(network_parts)), 5, "Generated networks should be unique")
+    
+    def test_remove_static_route(self):
+        """测试删除静态路由"""
+        # 先添加路由
+        self.router.add_static_route("10.0.0.0", "255.255.255.0", "192.168.1.2")
+        self.assertIn("10.0.0.0-255.255.255.0", self.router.routes)
+        
+        # 删除路由
+        self.router.remove_static_route("10.0.0.0", "255.255.255.0")
+        
+        # 验证路由已删除
+        self.assertNotIn("10.0.0.0-255.255.255.0", self.router.routes)
+    
+    def test_remove_nonexistent_route(self):
+        """测试删除不存在的路由"""
+        # 不应该报错
+        self.router.remove_static_route("192.168.100.0", "255.255.255.0")
+        # 验证没有添加任何路由
+        self.assertEqual(len(self.router.routes), 0)
+    
     def test_get_status(self):
         """测试获取状态"""
         status = self.router.get_status()
