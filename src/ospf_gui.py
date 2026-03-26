@@ -201,6 +201,20 @@ class OSPFGUI(QMainWindow):
         status_layout.addWidget(QLabel("路由表:"))
         status_layout.addWidget(self.route_table)
         
+        # 静态路由表
+        self.static_route_table = QTableWidget()
+        self.static_route_table.setColumnCount(3)
+        self.static_route_table.setHorizontalHeaderLabels(["网络", "掩码", "下一跳"])
+        self.static_route_table.horizontalHeader().setStretchLastSection(True)
+        self.static_route_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        status_layout.addWidget(QLabel("静态路由:"))
+        status_layout.addWidget(self.static_route_table)
+        
+        # 删除静态路由按钮
+        self.del_static_route_btn = QPushButton("删除选中静态路由")
+        self.del_static_route_btn.clicked.connect(self.delete_static_route)
+        status_layout.addWidget(self.del_static_route_btn)
+        
         # 统计
         self.stats_text = QTextEdit()
         self.stats_text.setMaximumHeight(100)
@@ -394,6 +408,35 @@ class OSPFGUI(QMainWindow):
         else:
             QMessageBox.warning(self, "错误", "OSPF 未运行")
     
+    def delete_static_route(self):
+        """删除选中的静态路由"""
+        if not self.simulator:
+            QMessageBox.warning(self, "错误", "请先启动 OSPF")
+            return
+        
+        current_row = self.static_route_table.currentRow()
+        if current_row < 0:
+            QMessageBox.warning(self, "错误", "请先选择要删除的静态路由")
+            return
+        
+        # 获取选中行的网络信息
+        network_item = self.static_route_table.item(current_row, 0)
+        netmask_item = self.static_route_table.item(current_row, 1)
+        
+        if network_item and netmask_item:
+            network = network_item.text()
+            netmask = netmask_item.text()
+            
+            # 调用 core 的 remove_static_route 方法
+            success = self.simulator.router.remove_static_route(network, netmask)
+            if success:
+                self.static_route_table.removeRow(current_row)
+                QMessageBox.information(self, "成功", f"静态路由 {network}/{netmask} 已删除")
+                # 同时刷新路由表
+                self.refresh_status()
+            else:
+                QMessageBox.warning(self, "错误", "删除失败，路由不存在")
+    
     def refresh_status(self):
         """刷新状态"""
         if not self.simulator:
@@ -433,6 +476,15 @@ LSDB 条目: {status['lsdb_entries']}
             self.route_table.setItem(row, 1, QTableWidgetItem(route['netmask']))
             self.route_table.setItem(row, 2, QTableWidgetItem(route.get('next_hop', '0.0.0.0')))
             self.route_table.setItem(row, 3, QTableWidgetItem(route.get('type', 'ospf')))
+        
+        # 更新静态路由表格
+        self.static_route_table.setRowCount(0)
+        for route in self.simulator.router.static_routes:
+            row = self.static_route_table.rowCount()
+            self.static_route_table.insertRow(row)
+            self.static_route_table.setItem(row, 0, QTableWidgetItem(route['network']))
+            self.static_route_table.setItem(row, 1, QTableWidgetItem(route['netmask']))
+            self.static_route_table.setItem(row, 2, QTableWidgetItem(route.get('next_hop', '0.0.0.0')))
     
     def _prefix_to_mask(self, prefix: int) -> str:
         """前缀转掩码"""
