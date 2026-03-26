@@ -479,12 +479,14 @@ LSDB 条目: {status['lsdb_entries']}
         
         # 更新静态路由表格
         self.static_route_table.setRowCount(0)
-        for route in self.simulator.router.static_routes:
-            row = self.static_route_table.rowCount()
-            self.static_route_table.insertRow(row)
-            self.static_route_table.setItem(row, 0, QTableWidgetItem(route['network']))
-            self.static_route_table.setItem(row, 1, QTableWidgetItem(route['netmask']))
-            self.static_route_table.setItem(row, 2, QTableWidgetItem(route.get('next_hop', '0.0.0.0')))
+        # 从 routes 字典中过滤 type='static' 的路由
+        for route_key, route in self.simulator.router.routes.items():
+            if route.get('type') == 'static':
+                row = self.static_route_table.rowCount()
+                self.static_route_table.insertRow(row)
+                self.static_route_table.setItem(row, 0, QTableWidgetItem(route['network']))
+                self.static_route_table.setItem(row, 1, QTableWidgetItem(route['netmask']))
+                self.static_route_table.setItem(row, 2, QTableWidgetItem(route.get('next_hop', '0.0.0.0')))
     
     def _prefix_to_mask(self, prefix: int) -> str:
         """前缀转掩码"""
