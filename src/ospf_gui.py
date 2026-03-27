@@ -210,6 +210,9 @@ class OSPFGUI(QMainWindow):
         # 添加垂直滚动条
         static_route_scrollbar = QScrollBar(Qt.Vertical)
         self.static_route_table.setVerticalScrollBar(static_route_scrollbar)
+        # 设置选择模式 - 支持选中整行
+        self.static_route_table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.static_route_table.setSelectionMode(QTableWidget.SingleSelection)
         status_layout.addWidget(QLabel("静态路由:"))
         status_layout.addWidget(self.static_route_table)
         

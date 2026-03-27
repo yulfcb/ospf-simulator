@@ -1040,6 +1040,9 @@ class OSPFRouter:
         
         通过发送 MaxAge LSA (LS Age = 3600) 来撤销路由。
         MaxAge LSA 会被邻居超时并从 LSDB 中清除。
+        
+        Returns:
+            bool: True 表示成功删除，False 表示路由不存在
         """
         route_key = f"{network}-{netmask}"
         
@@ -1047,8 +1050,10 @@ class OSPFRouter:
         if route_key in self.routes:
             del self.routes[route_key]
             logger.info(f"删除静态路由: {network}/{netmask}")
+            found = True
         else:
             logger.warning(f"路由不存在: {network}/{netmask}")
+            found = False
         
         # 从 LSDB 删除对应的 Type 5 LSA (AS External LSA)
         # 计算网络地址
@@ -1068,6 +1073,8 @@ class OSPFRouter:
             logger.info(f"撤销 AS External LSA: {network_addr}/{netmask}")
         else:
             logger.warning(f"LSA 不存在: {lsa_key}")
+        
+        return found
     
     def _flood_maxage_lsa(self, lsa_key: str, network_addr: str, netmask: str):
         """泛洪 MaxAge LSA (撤销路由)
