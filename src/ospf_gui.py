@@ -209,7 +209,7 @@ class OSPFGUI(QMainWindow):
         self.static_route_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         # 设置选择模式 - 支持选中整行
         self.static_route_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.static_route_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.static_route_table.setSelectionMode(QTableWidget.ExtendedSelection)
         # 启用焦点和鼠标追踪
         self.static_route_table.setFocusPolicy(Qt.StrongFocus)
         self.static_route_table.setMouseTracking(True)
