@@ -982,32 +982,53 @@ class OSPFRouter:
         logger.info(f"注入 ASBR Summary LSA (Type 4): ASBR={asbr_router_id} metric={metric}")
     
     def generate_routes(self, base_network: str, count: int, prefix: int = 24):
-        """批量生成静态路由
+        """批量生成静态路由 - 确保生成在不同网段
         
         Args:
-            base_network: 基础网络地址 (如 "10.0.0.0")
+            base_network: 基础网络地址 (如 "10.0.0.0") - 仅用于第一个网段
             count: 生成路由数量
             prefix: CIDR 前缀长度 (默认 24)
             
         Returns:
             生成的路由列表
+            
+        生成的路由分布在不同网段，例如:
+        10.0.0.0/24, 10.1.0.0/24, 10.2.0.0/24, 172.16.0.0/24, 192.168.0.0/24
+        不会在同一/16网段下生成多个/24子网（如 10.0.0.0/24 和 10.0.1.0/24）
         """
-        base_ip = list(map(int, base_network.split('.')))
+        # 定义多个不同的/16网段前缀，确保每个路由在不同/16网段
+        # 每个条目都是不同的 /16 网段，避免同一/16下多个/24
+        network_prefixes = [
+            "10.0.0.0",    # 10.0.x.x/16
+            "10.1.0.0",    # 10.1.x.x/16
+            "10.2.0.0",    # 10.2.x.x/16
+            "172.16.0.0",  # 172.16.x.x/16
+            "172.17.0.0",  # 172.17.x.x/16
+            "172.18.0.0",  # 172.18.x.x/16
+            "192.168.0.0", # 192.168.0.x/16 (单独一个/24)
+            "172.19.0.0",  # 172.19.x.x/16
+            "172.20.0.0",  # 172.20.x.x/16
+            "172.21.0.0",  # 172.21.x.x/16
+            "172.22.0.0",  # 172.22.x.x/16
+            "172.23.0.0",  # 172.23.x.x/16
+        ]
+        
         generated = []
         
-        # 计算每个网段的大小
-        # 对于 /24 掩码，网段大小是 256 (256 个地址)
-        # 为了生成不同网段，需要将 base_network 的第三位 (或第二位) 进行变化
-        subnet_size = 256  # /24 网段大小
-        subnet_mask = 256 - subnet_size  # 0
-        
         for i in range(count):
-            # 在第三位增加 (i * subnet_size) 来生成不同网段
-            # 这样 10.0.0.0/24, 10.0.1.0/24, 10.0.2.0/24, ...
-            network = f"{base_ip[0]}.{base_ip[1]}.{base_ip[2] + i}.{0}"
-            netmask = f"255.255.255.0"
-            self.add_static_route(network, netmask)
-            generated.append(f"{network}/24")
+            # 使用循环选择网段前缀，确保不同路由在不同/16网段
+            prefix_idx = i % len(network_prefixes)
+            network_base = network_prefixes[prefix_idx]
+            
+            # 构建网络地址: x.x.0.0/24
+            # 解析为网络地址 (第三个字节置0)
+            parts = network_base.split('.')
+            network_addr = f"{parts[0]}.{parts[1]}.{parts[2]}.0"
+            netmask = "255.255.255.0"
+            network = f"{network_addr}/24"
+            
+            self.add_static_route(network_addr, netmask)
+            generated.append(network)
         
         return generated
     
