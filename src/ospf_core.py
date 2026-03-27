@@ -982,17 +982,17 @@ class OSPFRouter:
         logger.info(f"注入 ASBR Summary LSA (Type 4): ASBR={asbr_router_id} metric={metric}")
     
     def generate_routes(self, base_network: str, count: int, prefix: int = 24):
-        """批量生成静态路由 - 确保生成在不同网段
+        """批量生成网段 - 确保生成在不同网段
         
         Args:
             base_network: 基础网络地址 (如 "10.0.0.0") - 仅用于第一个网段
-            count: 生成路由数量
+            count: 生成网段数量
             prefix: CIDR 前缀长度 (默认 24)
             
         Returns:
-            生成的路由列表
+            生成的网段列表 (如 ["10.0.0.0/24", "10.1.0.0/24", ...])
             
-        生成的路由分布在不同网段，例如:
+        生成的网段分布在不同网段，例如:
         10.0.0.0/24, 10.1.0.0/24, 10.2.0.0/24, 172.16.0.0/24, 192.168.0.0/24
         不会在同一/16网段下生成多个/24子网（如 10.0.0.0/24 和 10.0.1.0/24）
         """
@@ -1024,10 +1024,9 @@ class OSPFRouter:
             # 解析为网络地址 (第三个字节置0)
             parts = network_base.split('.')
             network_addr = f"{parts[0]}.{parts[1]}.{parts[2]}.0"
-            netmask = "255.255.255.0"
             network = f"{network_addr}/24"
             
-            self.add_static_route(network_addr, netmask)
+            # 只生成网段信息，不生成完整路由
             generated.append(network)
         
         return generated
