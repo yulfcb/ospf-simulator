@@ -201,12 +201,15 @@ class OSPFGUI(QMainWindow):
         status_layout.addWidget(QLabel("路由表:"))
         status_layout.addWidget(self.route_table)
         
-        # 静态路由表
+        # 静态路由表 - 添加滚动条
         self.static_route_table = QTableWidget()
         self.static_route_table.setColumnCount(3)
         self.static_route_table.setHorizontalHeaderLabels(["网络", "掩码", "下一跳"])
         self.static_route_table.horizontalHeader().setStretchLastSection(True)
         self.static_route_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        # 添加垂直滚动条
+        static_route_scrollbar = QScrollBar(Qt.Vertical)
+        self.static_route_table.setVerticalScrollBar(static_route_scrollbar)
         status_layout.addWidget(QLabel("静态路由:"))
         status_layout.addWidget(self.static_route_table)
         
