@@ -82,6 +82,14 @@ class OSPFGUI(QMainWindow):
         self.cost_spin.setMaximum(65535)
         config_layout.addWidget(self.cost_spin, 2, 4)
         
+        # MTU
+        config_layout.addWidget(QLabel("MTU:"), 2, 5)
+        self.mtu_spin = QSpinBox()
+        self.mtu_spin.setValue(1500)
+        self.mtu_spin.setRange(68, 9000)
+        self.mtu_spin.setToolTip("接口 MTU (默认 1500)")
+        config_layout.addWidget(self.mtu_spin, 2, 6)
+        
         # DD优先级 (0=不当Master)
         config_layout.addWidget(QLabel("DD优先级:"), 3, 0)
         self.priority_spin = QSpinBox()
@@ -213,7 +221,7 @@ class OSPFGUI(QMainWindow):
         # 启用焦点和鼠标追踪
         self.static_route_table.setFocusPolicy(Qt.StrongFocus)
         self.static_route_table.setMouseTracking(True)
-        status_layout.addWidget(QLabel("静态路由:")):
+        status_layout.addWidget(QLabel("静态路由:"))
         status_layout.addWidget(self.static_route_table)
         
         # 删除静态路由按钮
@@ -359,12 +367,13 @@ class OSPFGUI(QMainWindow):
         ip = self.iface_ip_edit.text()
         netmask = self.netmask_edit.text()
         cost = self.cost_spin.value()
+        mtu = self.mtu_spin.value()
         
         if not name or not ip:
             QMessageBox.warning(self, "错误", "请输入接口名称和IP")
             return
         
-        self.interfaces[name] = {'ip': ip, 'netmask': netmask, 'cost': cost}
+        self.interfaces[name] = {'ip': ip, 'netmask': netmask, 'cost': cost, 'mtu': mtu}
         
         # 更新表格
         row = self.iface_table.rowCount()
@@ -374,6 +383,10 @@ class OSPFGUI(QMainWindow):
         self.iface_table.setItem(row, 2, QTableWidgetItem(netmask))
         self.iface_table.setItem(row, 3, QTableWidgetItem(str(cost)))
         self.iface_table.setItem(row, 4, QTableWidgetItem("Down"))
+        
+        # 如果 OSPF 已启动，同时添加到 router
+        if self.running and self.simulator:
+            self.simulator.router.add_interface(name, ip, netmask, cost, mtu)
         
         QMessageBox.information(self, "成功", f"接口 {name} 已添加")
     
@@ -415,33 +428,48 @@ class OSPFGUI(QMainWindow):
             QMessageBox.warning(self, "错误", "OSPF 未运行")
     
     def delete_static_route(self):
-        """删除选中的静态路由"""
+        """删除选中的静态路由（支持批量删除）"""
         if not self.simulator:
             QMessageBox.warning(self, "错误", "请先启动 OSPF")
             return
         
-        current_row = self.static_route_table.currentRow()
-        if current_row < 0:
+        # 获取所有选中行
+        selected_rows = set(item.row() for item in self.static_route_table.selectedItems())
+        if not selected_rows:
             QMessageBox.warning(self, "错误", "请先选择要删除的静态路由")
             return
         
-        # 获取选中行的网络信息
-        network_item = self.static_route_table.item(current_row, 0)
-        netmask_item = self.static_route_table.item(current_row, 1)
+        # 按行号排序（从大到小删除，避免索引变化）
+        selected_rows = sorted(selected_rows, reverse=True)
         
-        if network_item and netmask_item:
-            network = network_item.text()
-            netmask = netmask_item.text()
+        deleted_count = 0
+        for row in selected_rows:
+            network_item = self.static_route_table.item(row, 0)
+            netmask_item = self.static_route_table.item(row, 1)
             
-            # 调用 core 的 remove_static_route 方法
-            success = self.simulator.router.remove_static_route(network, netmask)
-            if success:
-                self.static_route_table.removeRow(current_row)
-                QMessageBox.information(self, "成功", f"静态路由 {network}/{netmask} 已删除")
-                # 同时刷新路由表
-                self.refresh_status()
-            else:
-                QMessageBox.warning(self, "错误", "删除失败，路由不存在")
+            if network_item and netmask_item:
+                network = network_item.text()
+                netmask = netmask_item.text()
+                
+                # 调用 core 的 remove_static_route 方法，传入 socket 参数以发送 MaxAge LSA
+                success = self.simulator.router.remove_static_route(
+                    network, netmask,
+                    sock=self.simulator.sock if self.simulator else None,
+                    use_raw=self.simulator.use_raw if self.simulator else True,
+                    add_ip_header_func=self.simulator._add_ip_header if self.simulator else None
+                )
+                if success:
+                    deleted_count += 1
+        
+        if deleted_count > 0:
+            # 删除所有选中行（从大到小删除）
+            for row in selected_rows:
+                self.static_route_table.removeRow(row)
+            QMessageBox.information(self, "成功", f"已删除 {deleted_count} 条静态路由")
+            # 同时刷新路由表
+            self.refresh_status()
+        else:
+            QMessageBox.warning(self, "错误", "删除失败，所选路由不存在")
     
     def refresh_status(self):
         """刷新状态"""

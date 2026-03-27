@@ -830,12 +830,21 @@ class OSPFRouter:
             'links': []
         }
     
-    def add_interface(self, name: str, ip: str, netmask: str, cost: int = 1):
-        """添加接口"""
+    def add_interface(self, name: str, ip: str, netmask: str, cost: int = 1, mtu: int = 1500):
+        """添加接口
+        
+        Args:
+            name: 接口名称
+            ip: 接口 IP 地址
+            netmask: 子网掩码
+            cost: 接口 cost (默认 1)
+            mtu: 接口 MTU (默认 1500)
+        """
         self.interfaces[name] = {
             'ip': ip,
             'netmask': netmask,
             'cost': cost,
+            'mtu': mtu,  # 接口 MTU
             'network': self._calc_network(ip, netmask),
             'state': 'DR',  # DR, BDR, DROTHER
             'dr': '0.0.0.0',
@@ -853,7 +862,7 @@ class OSPFRouter:
                 'metric': cost
             })
         
-        logger.info(f"添加接口 {name}: {ip}/{netmask}")
+        logger.info(f"添加接口 {name}: {ip}/{netmask}, MTU={mtu}")
     
     def _calc_network(self, ip: str, mask: str) -> str:
         """计算网络地址"""
@@ -1031,12 +1040,16 @@ class OSPFRouter:
         
         return generated
     
-    def remove_static_route(self, network: str, netmask: str = "255.255.255.0"):
+    def remove_static_route(self, network: str, netmask: str = "255.255.255.0", 
+                            sock=None, use_raw=True, add_ip_header_func=None):
         """删除静态路由
         
         Args:
             network: 目标网络地址
             netmask: 网络掩码 (默认 255.255.255.0)
+            sock: socket 对象，用于发送 MaxAge LSA（可选）
+            use_raw: 是否使用 raw socket
+            add_ip_header_func: 添加 IP 头部的函数
         
         通过发送 MaxAge LSA (LS Age = 3600) 来撤销路由。
         MaxAge LSA 会被邻居超时并从 LSDB 中清除。
@@ -1065,9 +1078,57 @@ class OSPFRouter:
         lsa_key = f"5-{network_addr}"
         
         if lsa_key in self.lsdb:
-            # 发送 MaxAge LSA 来撤销路由
-            # MaxAge LSA: LS Age = 3600 (1 hour), 触发邻居超时
-            self._flood_maxage_lsa(lsa_key, network_addr, netmask)
+            # 如果有 socket，发送 MaxAge LSA 来撤销路由
+            if sock is not None:
+                # 构建并发送 MaxAge LSA
+                maxage_lsa = {
+                    'type': 5,
+                    'id': network_addr,
+                    'adv_router': self.router_id,
+                    'sequence': 0x7FFFFFFF,
+                    'checksum': 0,
+                    'age': 3600,
+                    'options': 0x02,
+                    'network_mask': netmask,
+                    'metric': 0xFFFFFF,
+                    'e_bit': 1,
+                    'forwarding_address': '0.0.0.0',
+                    'external_route_tag': 0
+                }
+                
+                lsu = LSUPacket(
+                    age=3600,
+                    type=5,
+                    id=network_addr,
+                    adv_router=self.router_id,
+                    sequence=0x7FFFFFFF,
+                    lsa_entries=[maxage_lsa]
+                )
+                
+                msg = OSPFHeader(
+                    type=OSPF_TYPE_LSU,
+                    length=24 + len(lsu.pack()),
+                    router_id=self.router_id,
+                    area_id=self.area_id
+                )
+                
+                packet = msg.pack(lsu.pack())
+                
+                # 发送给所有 FULL 状态的邻居
+                for neighbor_id, neighbor_info in self.neighbors.items():
+                    if neighbor_info.get('state') == NeighborState.FULL:
+                        # 添加 IP 头部 (如果需要)
+                        send_packet = packet
+                        if use_raw and add_ip_header_func:
+                            send_packet = add_ip_header_func(send_packet, neighbor_id)
+                        
+                        try:
+                            sock.sendto(send_packet, (neighbor_id, 89))
+                            logger.info(f"发送 MaxAge LSA 到邻居 {neighbor_id}: {network_addr}/{netmask}")
+                            self.stats['lsu_sent'] += 1
+                        except Exception as e:
+                            logger.error(f"发送 MaxAge LSA 失败: {e}")
+            
             # 从 LSDB 中删除
             del self.lsdb[lsa_key]
             logger.info(f"撤销 AS External LSA: {network_addr}/{netmask}")
@@ -1124,7 +1185,227 @@ class OSPFRouter:
         packet = msg.pack(lsu.pack())
         logger.info(f"泛洪 MaxAge LSA: {network_addr}/{netmask}")
         
+        # 发送给所有 FULL 状态的邻居
+        # 需要通过 simulator 的 socket 发送，这里只返回 packet
+        # 由调用者负责发送
         return packet
+    
+    def flood_maxage_lsa_to_neighbors(self, sock: socket.socket, use_raw: bool = True, add_ip_header_func=None):
+        """泛洪所有 MaxAge LSA 到所有邻居
+        
+        用于 remove_static_route 后将 MaxAge LSA 发送给邻居
+        
+        Args:
+            sock: socket to send on
+            use_raw: 是否使用 raw socket
+            add_ip_header_func: 添加 IP 头部的函数
+        """
+        # 遍历所有邻居，发送 MaxAge LSA
+        for neighbor_id, neighbor_info in self.neighbors.items():
+            if neighbor_info.get('state') == NeighborState.FULL:
+                # 为每个 FULL 状态的邻居构建并发送 MaxAge LSA
+                # 这里我们遍历 LSDB 找到需要撤销的 Type 5 LSA
+                for lsa_key, lsa in list(self.lsdb.items()):
+                    if lsa.get('type') == 5:
+                        # 构建 MaxAge LSA
+                        network_addr = lsa.get('id', '0.0.0.0')
+                        netmask = lsa.get('network_mask', '255.255.255.0')
+                        
+                        maxage_lsa = {
+                            'type': 5,
+                            'id': network_addr,
+                            'adv_router': self.router_id,
+                            'sequence': 0x7FFFFFFF,
+                            'checksum': 0,
+                            'age': 3600,
+                            'options': 0x02,
+                            'network_mask': netmask,
+                            'metric': 0xFFFFFF,
+                            'e_bit': 1,
+                            'forwarding_address': '0.0.0.0',
+                            'external_route_tag': 0
+                        }
+                        
+                        lsu = LSUPacket(
+                            age=3600,
+                            type=5,
+                            id=network_addr,
+                            adv_router=self.router_id,
+                            sequence=0x7FFFFFFF,
+                            lsa_entries=[maxage_lsa]
+                        )
+                        
+                        msg = OSPFHeader(
+                            type=OSPF_TYPE_LSU,
+                            length=24 + len(lsu.pack()),
+                            router_id=self.router_id,
+                            area_id=self.area_id
+                        )
+                        
+                        packet = msg.pack(lsu.pack())
+                        
+                        # 添加 IP 头部 (如果需要)
+                        if use_raw and add_ip_header_func:
+                            packet = add_ip_header_func(packet, neighbor_id)
+                        
+                        try:
+                            sock.sendto(packet, (neighbor_id, 89))
+                            logger.info(f"发送 MaxAge LSA 到邻居 {neighbor_id}: {network_addr}/{netmask}")
+                            self.stats['lsu_sent'] += 1
+                        except Exception as e:
+                            logger.error(f"发送 MaxAge LSA 失败: {e}")
+    
+    def _fragment_packet(self, packet: bytes, mtu: int = 1500) -> List[bytes]:
+        """根据 MTU 分片 OSPF 报文
+        
+        RFC 2328: OSPF 报文可以分片传输，每个分片都包含完整的 OSPF 头部。
+        当报文大小超过接口 MTU 时，需要分片。
+        
+        Args:
+            packet: 原始 OSPF 报文 (包含 IP 头部 + OSPF 头部 + 报文体)
+            mtu: 接口 MTU (默认 1500)
+            
+        Returns:
+            分片后的报文列表
+        """
+        # IP 头部 = 20 字节
+        ip_header_len = 20
+        # OSPF 头部 = 24 字节
+        ospf_header_len = 24
+        
+        # 计算 OSPF 报文最大负载 (不包括 IP 头)
+        max_ospf_payload = mtu - ip_header_len
+        
+        # 如果 OSPF 报文已经小于 MTU，无需分片
+        if len(packet) <= mtu:
+            return [packet]
+        
+        # 提取 OSPF 头部和报文体
+        if len(packet) < ip_header_len + ospf_header_len:
+            logger.warning(f"报文长度太短: {len(packet)}")
+            return [packet]
+        
+        ip_header = packet[:ip_header_len]
+        ospf_body = packet[ip_header_len:]
+        
+        # OSPF 报文总长度
+        total_ospf_len = len(ospf_body)
+        
+        # 计算每个分片的 OSPF 负载
+        # 每个分片需要包含完整的 OSPF 头部 (24 字节)
+        max_payload_per_frag = max_ospf_payload - ospf_header_len
+        
+        if max_payload_per_frag <= 0:
+            logger.error(f"MTU 太小 ({mtu})，无法容纳 OSPF 头部")
+            return [packet]
+        
+        fragments = []
+        offset = 0
+        frag_id = 0
+        
+        while offset < total_ospf_len:
+            # 计算当前分片的大小
+            chunk_size = min(max_payload_per_frag, total_ospf_len - offset)
+            
+            # 提取当前分片的 OSPF 数据
+            frag_ospf_body = ospf_body[offset:offset + chunk_size]
+            
+            # 构建新的 IP 头部
+            # IP 头部格式: ver(4) + IHL(4) + TOS(1) + TotalLen(2) + ID(2) + Flags(3) + FragOff(13) + TTL(1) + Proto(1) + Checksum(2) + Src(4) + Dst(4)
+            # 解析原始 IP 头部
+            version_ihl = ip_header[0]
+            tos = ip_header[1]
+            total_len = ip_header_len + ospf_header_len + chunk_size
+            packet_id = ip_header[4] << 8 | ip_header[5]
+            
+            # 设置分片标志: MF=1 表示还有更多分片, 除了最后一个分片
+            is_last_frag = (offset + chunk_size >= total_ospf_len)
+            if is_last_frag:
+                flags_fragment = 0x0000  # MF=0, 不分片=0
+            else:
+                flags_fragment = 0x2000  # MF=1
+            
+            ttl = 64
+            protocol = ip_header[9]
+            src_ip = ip_header[12:16]
+            dst_ip = ip_header[16:20]
+            
+            # 构建分片 IP 头部
+            frag_ip_header = struct.pack("!BBHHHBBH4s4s",
+                version_ihl, 
+                tos, 
+                total_len, 
+                packet_id,
+                flags_fragment,
+                ttl, 
+                protocol, 
+                0,  # checksum 初始为 0
+                src_ip, 
+                dst_ip
+            )
+            
+            # 计算校验和
+            checksum = self._ip_checksum(frag_ip_header)
+            frag_ip_header = struct.pack("!BBHHHBBH4s4s",
+                version_ihl, 
+                tos, 
+                total_len, 
+                packet_id,
+                flags_fragment,
+                ttl, 
+                protocol, 
+                checksum,
+                src_ip, 
+                dst_ip
+            )
+            
+            # 组装完整报文
+            frag_packet = frag_ip_header + ospf_header_len + frag_ospf_body
+            fragments.append(frag_packet)
+            
+            logger.debug(f"分片 {frag_id}: offset={offset}, size={len(frag_packet)}, MF={'0' if is_last_frag else '1'}")
+            
+            offset += chunk_size
+            frag_id += 1
+        
+        logger.info(f"分片完成: 原始大小 {len(packet)}, 分成 {len(fraguments)} 个分片, MTU={mtu}")
+        return fragments
+    
+    def send_packet_with_mtu(self, sock: socket.socket, packet: bytes, target: str, iface_name: str = None):
+        """根据接口 MTU 发送报文，需要时自动分片
+        
+        Args:
+            sock: socket to send on
+            packet: OSPF 报文 (不包含 IP 头部)
+            target: 目标地址
+            iface_name: 接口名称 (用于获取 MTU)
+        """
+        # 获取接口 MTU
+        mtu = 1500  # 默认值
+        if iface_name and iface_name in self.interfaces:
+            mtu = self.interfaces[iface_name].get('mtu', 1500)
+        
+        # 添加 IP 头部
+        if hasattr(self, 'use_raw') and self.use_raw:
+            packet_with_ip = self._add_ip_header(packet, target)
+        else:
+            packet_with_ip = packet
+        
+        # 检查是否需要分片
+        if len(packet_with_ip) > mtu:
+            # 需要分片
+            fragments = self._fragment_packet(packet_with_ip, mtu)
+            for frag in fragments:
+                try:
+                    sock.sendto(frag, (target, 89))
+                except Exception as e:
+                    logger.error(f"发送分片失败: {e}")
+        else:
+            # 不需要分片，直接发送
+            try:
+                sock.sendto(packet_with_ip, (target, 89))
+            except Exception as e:
+                logger.error(f"发送报文失败: {e}")
     
     def send_hello(self, sock: socket.socket, target: str = ALL_SPF_ROUTERS, options: int = None):
         """发送 Hello 报文
