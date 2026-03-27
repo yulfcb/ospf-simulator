@@ -500,11 +500,39 @@ LSDB 条目: {status['lsdb_entries']}
         return socket.inet_ntoa(struct.pack("!I", mask))
     
     def _increment_network(self, base: str, offset: int) -> str:
-        """递增网络号"""
-        parts = list(map(int, base.split('.')))
-        parts[2] = (parts[2] + offset // 256) % 256
-        parts[3] = (parts[3] + offset % 256) % 256
-        return '.'.join(map(str, parts))
+        """递增网络号
+        
+        正确逻辑：
+        1. 先计算 base network（将 base IP 与 netmask 进行 AND 运算）
+        2. 然后基于 prefix 递增网络号
+        
+        例如 base=10.1.2.1, prefix=16：
+        - 10.1.2.1 & 255.255.0.0 = 10.1.0.0
+        - 然后每次递增 1（对于 /16 来说就是第3个八位字节 +1）
+        - 结果：10.1.0.0/16, 10.2.0.0/16, 10.3.0.0/16 ...
+        """
+        prefix = self.prefix_spin.value()
+        
+        # 将 base IP 转为整数
+        base_int = struct.unpack("!I", socket.inet_aton(base))[0]
+        
+        # 计算 netmask
+        netmask = (0xFFFFFFFF << (32 - prefix)) & 0xFFFFFFFF
+        
+        # 计算 base network（IP 与 netmask AND 运算）
+        base_network_int = base_int & netmask
+        
+        # 根据 prefix 计算递增的位数
+        # 对于 /16，每递增1就是 256 (2^8)
+        # 对于 /24，每递增1就是 1
+        host_bits = 32 - prefix
+        increment = (1 << host_bits) if host_bits > 0 else 0
+        
+        # 计算新的网络号
+        new_network_int = base_network_int + (offset * increment)
+        
+        # 转回字符串格式
+        return socket.inet_ntoa(struct.pack("!I", new_network_int))
 
 
 import socket
