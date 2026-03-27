@@ -201,19 +201,19 @@ class OSPFGUI(QMainWindow):
         status_layout.addWidget(QLabel("路由表:"))
         status_layout.addWidget(self.route_table)
         
-        # 静态路由表 - 添加滚动条
+        # 静态路由表
         self.static_route_table = QTableWidget()
         self.static_route_table.setColumnCount(3)
         self.static_route_table.setHorizontalHeaderLabels(["网络", "掩码", "下一跳"])
         self.static_route_table.horizontalHeader().setStretchLastSection(True)
         self.static_route_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        # 添加垂直滚动条
-        static_route_scrollbar = QScrollBar(Qt.Vertical)
-        self.static_route_table.setVerticalScrollBar(static_route_scrollbar)
         # 设置选择模式 - 支持选中整行
         self.static_route_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.static_route_table.setSelectionMode(QTableWidget.SingleSelection)
-        status_layout.addWidget(QLabel("静态路由:"))
+        # 启用焦点和鼠标追踪
+        self.static_route_table.setFocusPolicy(Qt.StrongFocus)
+        self.static_route_table.setMouseTracking(True)
+        status_layout.addWidget(QLabel("静态路由:")):
         status_layout.addWidget(self.static_route_table)
         
         # 删除静态路由按钮
