@@ -8,7 +8,7 @@ import sys
 import struct
 import socket
 
-sys.path.insert(0, '/code/ospf-simulator/src')
+sys.path.insert(0, 'src')
 from ospf_core import (
     OSPFHeader, HelloPacket, DDPacket, LSRPacket, LSUPacket, LSAHeader,
     OSPF_TYPE_HELLO, OSPF_TYPE_DD, OSPF_TYPE_LSR, OSPF_TYPE_LSU, OSPF_TYPE_LSACK

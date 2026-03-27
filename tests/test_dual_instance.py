@@ -14,7 +14,7 @@ import subprocess
 import socket
 import time
 
-sys.path.insert(0, '/code/ospf-simulator/src')
+sys.path.insert(0, 'src')
 
 from ospf_core import (
     OSPFSimulator, OSPF_TYPE_HELLO, OSPF_TYPE_DD, 

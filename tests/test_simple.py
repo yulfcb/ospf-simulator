@@ -4,7 +4,7 @@ OSPF 模拟器 - 简化测试
 """
 
 import sys
-sys.path.insert(0, '/work/ospf_sim/src')
+sys.path.insert(0, 'src')
 from ospf_core import OSPFRouter, OSPFSimulator
 
 def test_basic():

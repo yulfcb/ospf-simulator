@@ -10,7 +10,7 @@ import socket
 import threading
 import time
 
-sys.path.insert(0, '/work/ospf_sim/src')
+sys.path.insert(0, 'src')
 from ospf_core import (
     OSPFHeader, HelloPacket, DDPacket, LSRPacket, LSUPacket,
     OSPFRouter, OSPFSimulator, NeighborState,
