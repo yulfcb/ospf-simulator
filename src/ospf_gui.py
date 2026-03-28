@@ -494,6 +494,49 @@ class OSPFGUI(QMainWindow):
         else:
             QMessageBox.warning(self, "错误", "删除失败，所选路由不存在")
     
+    def _update_static_route_table(self):
+        """更新静态路由表格（保留选中状态）"""
+        # 保存当前选中的网络+掩码组合
+        selected_routes = set()
+        for item in self.static_route_table.selectedItems():
+            row = item.row()
+            network_item = self.static_route_table.item(row, 0)
+            netmask_item = self.static_route_table.item(row, 1)
+            if network_item and netmask_item:
+                selected_routes.add((network_item.text(), netmask_item.text()))
+        
+        # 获取当前静态路由数据
+        static_routes = []
+        for route_key, route in self.simulator.router.routes.items():
+            if route.get('type') == 'static':
+                static_routes.append({
+                    'network': route['network'],
+                    'netmask': route['netmask'],
+                    'next_hop': route.get('next_hop', '0.0.0.0')
+                })
+        
+        # 重建表格
+        self.static_route_table.setRowCount(0)
+        new_selected_rows = []
+        
+        for route in static_routes:
+            row = self.static_route_table.rowCount()
+            self.static_route_table.insertRow(row)
+            self.static_route_table.setItem(row, 0, QTableWidgetItem(route['network']))
+            self.static_route_table.setItem(row, 1, QTableWidgetItem(route['netmask']))
+            self.static_route_table.setItem(row, 2, QTableWidgetItem(route['next_hop']))
+            
+            # 如果这行之前被选中，恢复选中状态
+            if (route['network'], route['netmask']) in selected_routes:
+                new_selected_rows.append(row)
+        
+        # 批量恢复选中状态
+        for row in new_selected_rows:
+            for col in range(self.static_route_table.columnCount()):
+                item = self.static_route_table.item(row, col)
+                if item:
+                    item.setSelected(True)
+    
     def refresh_status(self):
         """刷新状态"""
         if not self.simulator:
@@ -534,16 +577,8 @@ LSDB 条目: {status['lsdb_entries']}
             self.route_table.setItem(row, 2, QTableWidgetItem(route.get('next_hop', '0.0.0.0')))
             self.route_table.setItem(row, 3, QTableWidgetItem(route.get('type', 'ospf')))
         
-        # 更新静态路由表格
-        self.static_route_table.setRowCount(0)
-        # 从 routes 字典中过滤 type='static' 的路由
-        for route_key, route in self.simulator.router.routes.items():
-            if route.get('type') == 'static':
-                row = self.static_route_table.rowCount()
-                self.static_route_table.insertRow(row)
-                self.static_route_table.setItem(row, 0, QTableWidgetItem(route['network']))
-                self.static_route_table.setItem(row, 1, QTableWidgetItem(route['netmask']))
-                self.static_route_table.setItem(row, 2, QTableWidgetItem(route.get('next_hop', '0.0.0.0')))
+        # 更新静态路由表格（保留选中状态）
+        self._update_static_route_table()
     
     def _prefix_to_mask(self, prefix: int) -> str:
         """前缀转掩码"""
