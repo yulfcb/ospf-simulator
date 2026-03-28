@@ -218,9 +218,8 @@ class OSPFGUI(QMainWindow):
         # 设置选择模式 - 支持选中整行
         self.static_route_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.static_route_table.setSelectionMode(QTableWidget.ExtendedSelection)
-        # 启用焦点和鼠标追踪
-        self.static_route_table.setFocusPolicy(Qt.StrongFocus)
-        self.static_route_table.setMouseTracking(True)
+        # 禁用强焦点策略，允许鼠标选中后移开焦点而不丢失选中状态
+        self.static_route_table.setFocusPolicy(Qt.NoFocus)
         status_layout.addWidget(QLabel("静态路由:"))
         status_layout.addWidget(self.static_route_table)
         
