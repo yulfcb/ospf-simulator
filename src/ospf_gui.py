@@ -26,6 +26,17 @@ class OSPFGUI(QMainWindow):
         self.running = False
         self.init_ui()
     
+    def eventFilter(self, obj, event):
+        """事件过滤器：阻止静态路由表空白区域点击取消选中"""
+        if obj == self.static_route_table.viewport():
+            if event.type() == event.MouseButtonPress:
+                # 检查点击位置是否有对应的项
+                index = self.static_route_table.indexAt(event.pos())
+                if not index.isValid():
+                    # 点击空白区域，不清除已有选中
+                    return True
+        return super().eventFilter(obj, event)
+    
     def init_ui(self):
         self.setWindowTitle("OSPFv2 模拟器")
         self.setGeometry(100, 100, 900, 700)
@@ -215,11 +226,24 @@ class OSPFGUI(QMainWindow):
         self.static_route_table.setHorizontalHeaderLabels(["网络", "掩码", "下一跳"])
         self.static_route_table.horizontalHeader().setStretchLastSection(True)
         self.static_route_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        # 设置选择模式 - 单选模式，避免多选混乱
+        # 设置选择模式 - 支持选中整行且可多选
         self.static_route_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.static_route_table.setSelectionMode(QTableWidget.SingleSelection)
-        # 使用 ClickFocus：点击时获得焦点，选中后点击其他位置不会丢失选中状态
-        self.static_route_table.setFocusPolicy(Qt.ClickFocus)
+        self.static_route_table.setSelectionMode(QTableWidget.ExtendedSelection)
+        # 禁用焦点，避免失去焦点时自动取消选中
+        self.static_route_table.setFocusPolicy(Qt.NoFocus)
+        # 设置选中样式：高亮显示
+        self.static_route_table.setStyleSheet("""
+            QTableWidget::item:selected {
+                background-color: #0078D7;
+                color: white;
+            }
+            QTableWidget::item:selected:!active {
+                background-color: #0078D7;
+                color: white;
+            }
+        """)
+        # 安装事件过滤器，阻止空白区域点击取消选中
+        self.static_route_table.viewport().installEventFilter(self)
         status_layout.addWidget(QLabel("静态路由:"))
         status_layout.addWidget(self.static_route_table)
         
