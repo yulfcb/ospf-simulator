@@ -215,11 +215,11 @@ class OSPFGUI(QMainWindow):
         self.static_route_table.setHorizontalHeaderLabels(["网络", "掩码", "下一跳"])
         self.static_route_table.horizontalHeader().setStretchLastSection(True)
         self.static_route_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        # 设置选择模式 - 支持选中整行
+        # 设置选择模式 - 单选模式，避免多选混乱
         self.static_route_table.setSelectionBehavior(QTableWidget.SelectRows)
-        self.static_route_table.setSelectionMode(QTableWidget.ExtendedSelection)
-        # 禁用强焦点策略，允许鼠标选中后移开焦点而不丢失选中状态
-        self.static_route_table.setFocusPolicy(Qt.NoFocus)
+        self.static_route_table.setSelectionMode(QTableWidget.SingleSelection)
+        # 使用 ClickFocus：点击时获得焦点，选中后点击其他位置不会丢失选中状态
+        self.static_route_table.setFocusPolicy(Qt.ClickFocus)
         status_layout.addWidget(QLabel("静态路由:"))
         status_layout.addWidget(self.static_route_table)
         
