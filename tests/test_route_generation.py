@@ -27,7 +27,7 @@ def test_generate_routes_different_networks():
     router = OSPFRouter("1.1.1.1", "0.0.0.0")
     
     # 生成 10 条路由
-    routes = router.generate_routes("10.0.0.0", 10, 24)
+    routes = router.generate_diverse_routes("10.0.0.0", 10, 24)
     
     print(f"生成的路由数量: {len(routes)}")
     print(f"路由列表: {routes}")
@@ -67,7 +67,7 @@ def test_route_not_in_same_subnet():
     router = OSPFRouter("2.2.2.2", "0.0.0.0")
     
     # 生成路由
-    routes = router.generate_routes("10.0.0.0", 10, 24)
+    routes = router.generate_diverse_routes("10.0.0.0", 10, 24)
     
     # 检查不应该出现像 10.0.0.0/24 和 10.0.1.0/24 这样的组合
     # （同一/16下的不同/24）

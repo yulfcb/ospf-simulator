@@ -1323,25 +1323,54 @@ class OSPFRouter:
     
     def generate_routes(self, base_network: str, count: int, prefix: int = 24):
         """
-        Generate multiple routes across different /16 networks.
-        
-        Routes are distributed across multiple /16 prefixes to ensure
-        network diversity. Each route is also added to self.routes.
+        Generate sequential routes starting from base_network.
         
         Args:
-            base_network: Base network address (used to determine starting point)
+            base_network: Base network address (e.g. "10.0.0.0")
             count: Number of routes to generate
             prefix: CIDR prefix length (default 24)
         
         Returns:
-            List of generated network strings
+            List of generated network strings (e.g. ["10.0.0.0/24", "10.0.1.0/24", ...])
+        """
+        parts = base_network.split('.')
+        start_third = int(parts[2])
+        
+        generated = []
+        for i in range(count):
+            third_octet = (start_third + i) & 0xFF
+            network_addr = f"{parts[0]}.{parts[1]}.{third_octet}.0"
+            network = f"{network_addr}/{prefix}"
+            generated.append(network)
+            
+            netmask = self._prefix_to_netmask(prefix)
+            route_key = f"{network_addr}-{netmask}"
+            self.routes[route_key] = {
+                'network': network_addr, 'netmask': netmask,
+                'next_hop': '0.0.0.0', 'cost': 1, 'type': 'static'
+            }
+            self._inject_route_to_lsa(network_addr, netmask, '0.0.0.0')
+        
+        return generated
+
+    def generate_diverse_routes(self, base_network: str, count: int, prefix: int = 24):
+        """
+        Generate routes distributed across different /16 networks.
+
+        Args:
+            base_network: Base network address (used only for first route)
+            count: Number of routes to generate
+            prefix: CIDR prefix length (default 24)
+
+        Returns:
+            List of generated network strings spanning multiple /16 prefixes
         """
         network_prefixes = [
             "10.0.0.0", "10.1.0.0", "10.2.0.0", "172.16.0.0", "172.17.0.0",
             "172.18.0.0", "192.168.0.0", "172.19.0.0", "172.20.0.0",
             "172.21.0.0", "172.22.0.0", "172.23.0.0",
         ]
-        
+
         generated = []
         for i in range(count):
             prefix_idx = i % len(network_prefixes)
@@ -1350,19 +1379,17 @@ class OSPFRouter:
             network_addr = f"{parts[0]}.{parts[1]}.{parts[2]}.0"
             network = f"{network_addr}/{prefix}"
             generated.append(network)
-            
-            # Add to self.routes for external route injection
+
             netmask = self._prefix_to_netmask(prefix)
             route_key = f"{network_addr}-{netmask}"
             self.routes[route_key] = {
                 'network': network_addr, 'netmask': netmask,
                 'next_hop': '0.0.0.0', 'cost': 1, 'type': 'static'
             }
-            # Also inject into LSA
             self._inject_route_to_lsa(network_addr, netmask, '0.0.0.0')
-        
+
         return generated
-    
+
     def _prefix_to_netmask(self, prefix: int) -> str:
         """Convert CIDR prefix to netmask string."""
         mask = (0xFFFFFFFF >> (32 - prefix)) << (32 - prefix)
