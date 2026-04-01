@@ -1083,14 +1083,17 @@ class OSPFInstance:
         
         lsa_length = 20 + len(lsa_body)
         
-        lsa_header_no_age = struct.pack("!BB4s4sIHH",
+        # RFC 2328 Appendix B: LSA checksum is calculated with LS Age set to 0
+        lsa_header_with_age = struct.pack("!HBB4s4sIHH",
+            lsa.get('age', 0),
             lsa.get('options', 0x02), lsa_type,
             socket.inet_aton(lsa.get('id', '0.0.0.0')),
             socket.inet_aton(lsa.get('adv_router', self.router_id)),
             lsa.get('sequence', 0x80000001), 0, lsa_length
         )
         
-        lsa_checksum = calc_checksum(lsa_header_no_age + lsa_body)
+        # Use Fletcher-16 checksum (RFC 2328) for LSA, not RFC 1071
+        lsa_checksum = calc_lsa_checksum(lsa_header_with_age, lsa_body)
         return lsa_checksum, lsa_length
     
     def _send_lsr(self, neighbor_id: str) -> None:
@@ -1685,14 +1688,17 @@ class OSPFRouter:
         
         lsa_length = 20 + len(lsa_body)
         
-        lsa_header_no_age = struct.pack("!BB4s4sIHH",
+        # RFC 2328 Appendix B: LSA checksum is calculated with LS Age set to 0
+        lsa_header_with_age = struct.pack("!HBB4s4sIHH",
+            lsa.get('age', 0),
             lsa.get('options', 0x02), lsa_type,
             socket.inet_aton(lsa.get('id', '0.0.0.0')),
             socket.inet_aton(lsa.get('adv_router', self.router_id)),
             lsa.get('sequence', 0x80000001), 0, lsa_length
         )
         
-        lsa_checksum = calc_checksum(lsa_header_no_age + lsa_body)
+        # Use Fletcher-16 checksum (RFC 2328) for LSA, not RFC 1071
+        lsa_checksum = calc_lsa_checksum(lsa_header_with_age, lsa_body)
         return lsa_checksum, lsa_length
 
     def _build_dd_packet(self, neighbor_id: str, seq: int, flags: int, lsa_headers: list) -> bytes:
