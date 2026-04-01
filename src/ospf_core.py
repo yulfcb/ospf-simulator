@@ -1322,6 +1322,20 @@ class OSPFRouter:
         logger.info(f"注入 ASBR Summary LSA (Type 4): ASBR={asbr_router_id} metric={metric}")
     
     def generate_routes(self, base_network: str, count: int, prefix: int = 24):
+        """
+        Generate multiple routes across different /16 networks.
+        
+        Routes are distributed across multiple /16 prefixes to ensure
+        network diversity. Each route is also added to self.routes.
+        
+        Args:
+            base_network: Base network address (used to determine starting point)
+            count: Number of routes to generate
+            prefix: CIDR prefix length (default 24)
+        
+        Returns:
+            List of generated network strings
+        """
         network_prefixes = [
             "10.0.0.0", "10.1.0.0", "10.2.0.0", "172.16.0.0", "172.17.0.0",
             "172.18.0.0", "192.168.0.0", "172.19.0.0", "172.20.0.0",
@@ -1334,10 +1348,25 @@ class OSPFRouter:
             network_base = network_prefixes[prefix_idx]
             parts = network_base.split('.')
             network_addr = f"{parts[0]}.{parts[1]}.{parts[2]}.0"
-            network = f"{network_addr}/24"
+            network = f"{network_addr}/{prefix}"
             generated.append(network)
+            
+            # Add to self.routes for external route injection
+            netmask = self._prefix_to_netmask(prefix)
+            route_key = f"{network_addr}-{netmask}"
+            self.routes[route_key] = {
+                'network': network_addr, 'netmask': netmask,
+                'next_hop': '0.0.0.0', 'cost': 1, 'type': 'static'
+            }
+            # Also inject into LSA
+            self._inject_route_to_lsa(network_addr, netmask, '0.0.0.0')
         
         return generated
+    
+    def _prefix_to_netmask(self, prefix: int) -> str:
+        """Convert CIDR prefix to netmask string."""
+        mask = (0xFFFFFFFF >> (32 - prefix)) << (32 - prefix)
+        return socket.inet_ntoa(struct.pack('!I', mask))
     
     def remove_static_route(self, network: str, netmask: str = "255.255.255.0",
                            sock=None, use_raw=True, add_ip_header_func=None):
